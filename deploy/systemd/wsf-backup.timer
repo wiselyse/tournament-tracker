@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up the WSF tournament database every night
+
+[Timer]
+OnCalendar=*-*-* 04:00
+# If the machine was off at 4 am, run the backup at the next boot instead.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

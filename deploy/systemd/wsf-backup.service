@@ -1,0 +1,8 @@
+# @REPO@ is replaced with the repo path by deploy/deploy.sh when it installs this file.
+[Unit]
+Description=WSF Tournament Tracker nightly database backup
+
+[Service]
+Type=oneshot
+Environment=WSF_DATA_DIR=%h/apps/wsf-data
+ExecStart=/usr/bin/python3 -I @REPO@/deploy/backup.py

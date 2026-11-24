@@ -1,0 +1,68 @@
+/* Design tokens from docs/HANDOFF.md §8.1. Dark is the default; light via [data-theme="light"]. */
+:root {
+  --bg: #2a2c33;
+  --rail: #23252b;
+  --panel: #33353e;
+  --surface: #3b3e48;
+  --popover: #3b3e48;
+  --nav-active: #3e5654;
+  --line: rgba(249, 228, 197, 0.14);
+  --seat-line: rgba(249, 228, 197, 0.35);
+  --text: #f9e4c5;
+  --muted: #c2b6a1;
+  --accent-text: #d9b877;
+  --accent-bg: #d9b877;
+  --accent-fg: #23252b;
+  --sea: #8cbcb4;
+  --sea-text: #8cbcb4;
+  --brick: #e8988a;
+  --felt: #3e5654;
+  --felt-border: #d9b877;
+  --felt-hairline: rgba(249, 228, 197, 0.3);
+  --seat: #33353e;
+  --spoon: #d9b877;
+  --hover: #464a55;
+  --chip: #3b3e48;
+  --sea-bg: rgba(140, 188, 180, 0.12);
+  --brick-bg: rgba(232, 152, 138, 0.12);
+  --on-brick: #23252b;
+  --gold-bg: rgba(217, 184, 119, 0.1);
+  --toast-bg: #f9e4c5;
+  --toast-fg: #23252b;
+
+  --font-display: 'Cinzel', serif;
+  --font-ui: 'Inter', system-ui, sans-serif;
+  --font-accent: 'EB Garamond', serif;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f7efe2;
+  --rail: #efe3cf;
+  --panel: #fffaf2;
+  --surface: #f3e7d4;
+  --popover: #ffffff;
+  --nav-active: #e4d3b6;
+  --line: rgba(51, 53, 62, 0.16);
+  --seat-line: rgba(51, 53, 62, 0.35);
+  --text: #23312f;
+  --muted: #5a5850;
+  --accent-text: #86662a;
+  --accent-bg: #3e5654;
+  --accent-fg: #f9e4c5;
+  --sea: #5aa093;
+  --sea-text: #2c6b62;
+  --brick: #a3443a;
+  --seat: #ffffff;
+  --hover: #f3e7d4;
+  --chip: #efe3cf;
+  --sea-bg: rgba(90, 160, 147, 0.12);
+  --brick-bg: rgba(163, 68, 58, 0.1);
+  --on-brick: #ffffff;
+  --gold-bg: rgba(134, 102, 42, 0.08);
+  --toast-bg: #23312f;
+  --toast-fg: #f9e4c5;
+
+  color-scheme: light;
+}

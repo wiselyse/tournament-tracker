@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Data (tournaments.db, exports) — never commit
+backend/data/
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/dev-dist/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local working notes — kept on this machine, not published
+docs/HANDOFF.md
+CLAUDE.md

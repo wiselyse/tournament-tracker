@@ -1,0 +1,17 @@
+# @REPO@ is replaced with the repo path by deploy/deploy.sh when it installs this file.
+[Unit]
+Description=WSF Tournament Tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@/backend
+Environment=WSF_DATA_DIR=%h/apps/wsf-data
+# Localhost only: other devices reach it through a proxy such as `tailscale serve` (see deploy/README.md).
+ExecStart=@REPO@/backend/.venv/bin/uvicorn wsf_tournament.app:app --host 127.0.0.1 --port 8420
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
