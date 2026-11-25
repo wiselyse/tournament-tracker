@@ -92,9 +92,12 @@ def between_layout(cfg: TableConfig, seat_arcs: list[float], empty_gap: int, ins
       at the gap's midpoint along a side, and spread evenly round the corners (strict
       equidistance there piles two or three spoons onto the track's corner).
     - Circle/oval: on the same shape `inset` in, opposite the gap's midpoint.
-    - The two spoons beside the empty gap each move a third of the way along the track
-      toward the empty gap's spot: ⅓ of a seat on a straight side, which makes the spacing
-      even across that stretch.
+    - The empty gap keeps its spot: the marker (drawn as a red spoon) sits exactly where
+      that gap's spoon would be, and no other spoon moves. The table evens them out in person.
+    - Rectangle with an empty end: the gap between the last top player and the first
+      bottom player (or back) sits on the middle line, between the two players, but no
+      nearer the end than the track the other spoons lie on.
+    - Two players: their one spoon sits dead centre, so it's the same reach for both.
     Returns (spoons, empty_marker).
     """
     per = Perimeter(cfg)
@@ -102,6 +105,8 @@ def between_layout(cfg: TableConfig, seat_arcs: list[float], empty_gap: int, ins
     if n < 2:
         return [], None
     w, h = cfg.size
+    if n == 2:
+        return [{"x": w / 2, "y": h / 2, "rot": 0.0}], None
     depth = inset * min(w, h)
     if cfg.shape == "square":
         # shortcut: at ⅓ in, a square's track is so small that seats either side of a corner
@@ -121,6 +126,15 @@ def between_layout(cfg: TableConfig, seat_arcs: list[float], empty_gap: int, ins
         def at(s: float) -> dict:
             x, y = track.point(s)
             return {"x": x, "y": y, "rot": _toward_middle(cfg, x, y)}
+
+        def across(i: int) -> dict | None:
+            """Gap i's spot if its players face each other across an empty rectangle end."""
+            a, b = seats[i], seats[(i + 1) % n]
+            if cfg.shape != "rectangle" or a.ny == b.ny or 0 in (a.ny, b.ny):
+                return None
+            # Lined up with the two players, but no nearer the end than the other spoons' track.
+            x = min(max((a.x + b.x) / 2, track.x0), track.x1)
+            return {"x": x, "y": h / 2, "rot": 180.0 if x > w / 2 else 0.0}
     else:
         L = per.length
         a, b = w / 2, h / 2
@@ -128,6 +142,9 @@ def between_layout(cfg: TableConfig, seat_arcs: list[float], empty_gap: int, ins
 
         def gap_arc(i: int) -> float:
             return seat_arcs[i] + gaps[i] / 2
+
+        def across(i: int) -> None:
+            return None
 
         def at(s: float) -> dict:
             # The ellipse `depth` in at its ends, not an offset curve: at an oval's tight
@@ -138,17 +155,6 @@ def between_layout(cfg: TableConfig, seat_arcs: list[float], empty_gap: int, ins
 
     e = empty_gap % n
     marc = gap_arc(e)
-    marker = at(marc)
-    if n == 2:
-        return [at(gap_arc(1 - e))], marker
-    spoons = []
-    for i in range(n):
-        if i == e:
-            continue
-        s = gap_arc(i)
-        if i == (e - 1) % n:
-            s += ((marc - s) % L) / 3
-        elif i == (e + 1) % n:
-            s -= ((s - marc) % L) / 3
-        spoons.append(at(s))
+    marker = across(e) or at(marc)
+    spoons = [across(i) or at(gap_arc(i)) for i in range(n) if i != e]
     return spoons, marker

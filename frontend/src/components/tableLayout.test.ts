@@ -48,6 +48,16 @@ describe('placeTable', () => {
     expect(p.seats[1].y).toBeGreaterThan(p.table.y + p.table.h) // right end → bottom
     expect(p.spoons[0].deg).toBe(180)
   })
+  it('stretches a portrait table on a narrow phone so long sides get room', () => {
+    const sides = { ...geo, seats: [0.2, 0.4, 0.6, 0.8].map((x, i) => ({ seat_no: i + 1, x, y: 0, nx: 0, ny: -1 })) }
+    const plain = placeTable(sides, 360, 700, 22, 84, 58)
+    const tall = placeTable(sides, 360, 700, 22, 84, 58, 52)
+    const ys = tall.seats.map((s) => s.y).sort((a, b) => a - b)
+    expect(ys[1] - ys[0]).toBeCloseTo(52) // just far enough apart
+    expect(tall.table.w).toBeCloseTo(plain.table.w) // same width: names keep their room
+    expect(tall.table.h).toBeGreaterThan(plain.table.h)
+    expect(tall.table.y).toBeGreaterThanOrEqual(84 - 1e-9) // still inside the margins
+  })
   it('never rotates circles', () => {
     const circle = { ...geo, table: { ...geo.table, shape: 'circle' as const, w: 1, h: 1 } }
     expect(placeTable(circle, 400, 800, 22, 70).portrait).toBe(false)

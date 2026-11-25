@@ -1,24 +1,28 @@
-import { useState } from 'react'
 import { Link } from 'react-router'
 import { Icon } from '../../components/Icon'
 import { useConfirm } from '../../components/Confirm'
 import { activeDivision, currentStage, divisionLabel } from '../../state/describe'
 import { useT } from '../../state/tournament'
+import { usePlayerActions } from './PlayerActions'
 import { Elapsed } from './Timer'
 
-/** Rule 2.2.2 (2026): the player left without a spoon concedes. Two players read more
- *  naturally as "X wins" (the other concedes); three or more as "X left without a spoon". */
+/** Rule 2.2.2 (2026): the player left without a spoon loses the stalemate, and with it the
+ *  round: they're out. Two players read more naturally as "X wins" (the other is out); three or
+ *  more as "X left without a spoon". Then: who won the round? */
 export function StalemateButtons({ id, players }: { id: string; players: string[] }) {
-  const { act, pending, name } = useT()
+  const { state, pending, name } = useT()
+  const actions = usePlayerActions()
   const two = players.length === 2
+  const byId = new Map(state.players.map((p) => [p.id, p]))
   return (
     <>
       {players.map((pid, i) => (
         <button key={pid} className="btn btn-sea" disabled={pending}
-          onClick={() => act({ type: 'resolve_stalemate', stalemate_id: id, loser_id: two ? players[1 - i] : pid })}>
+          onClick={() => actions.loseStalemate(id, byId.get(two ? players[1 - i] : pid)!)}>
           {two ? `${name(pid)} wins` : `${name(pid)} left without a spoon`}
         </button>
       ))}
+      {actions.sheet}
     </>
   )
 }
@@ -28,8 +32,6 @@ export function StageCards({ now }: { now: number }) {
   const { state, act, undo, pending, name } = useT()
   const confirm = useConfirm()
   const stage = currentStage(state)
-  const waiting = stage?.divisions.filter((d) => d.status === 'waiting') ?? []
-  const [nextDiv, setNextDiv] = useState<string>('')
   // "Undo penalty" / "Undo last out" must only undo that exact action, so they appear
   // only while it is the newest thing in the history.
   const lastGroup = state.timeline.length ? state.timeline[state.timeline.length - 1].group : 0
@@ -37,14 +39,30 @@ export function StageCards({ now }: { now: number }) {
   const lastIsPenaltyFor = (pid: string) => newest?.type === 'PenaltyLogged' && newest.player_ids?.[0] === pid
   const lastIsOut = newest?.type === 'PlayerEliminated'
 
+  // Who's in which division, until the stage's first player goes out (the draw happens at Start).
+  const gone = new Set(state.players.filter((p) => !['in', 'waiting', 'advanced'].includes(p.status)).map((p) => p.id))
+  // Until every division has had its first turn (or before anyone's out), so players can check.
+  const showDraw = stage && !stage.is_final &&
+    (stage.divisions.some((d) => d.status === 'waiting') || !stage.divisions.some((d) => d.player_ids.some((id) => gone.has(id))))
+
   return (
     <div className="stage-cards">
+      {showDraw && (
+        <section className="card" aria-label="Divisions">
+          <div className="grow stack-tight">
+            <span className="card-eyebrow">STAGE {stage.no} · DIVISIONS DRAWN</span>
+            {stage.divisions.map((d) => (
+              <span key={d.id}><b>Division {d.label}:</b> {d.player_ids.map(name).join(' · ')}</span>
+            ))}
+          </div>
+        </section>
+      )}
       {state.open_stalemates.map((sm) => (
         <section key={sm.id} className="card card-sea" aria-label="Open stalemate">
           <div className="card-icon sea"><Icon name="stalemate" size={22} strokeWidth={2} /></div>
           <div className="grow stack-tight">
             <span className="card-eyebrow sea-text">
-              STALEMATE · BRANCH OPEN <Elapsed since={sm.opened_at} now={now} />
+              STALEMATE · {sm.started_at == null ? 'WAITING TO START' : <>PLAYING <Elapsed since={sm.started_at} now={now} /></>}
             </span>
             <span className="card-title">
               {sm.player_ids.map(name).join(' vs. ')} — stalemate round, {sm.player_ids.length - 1} spoon{sm.player_ids.length > 2 ? 's' : ''}
@@ -86,21 +104,9 @@ export function StageCards({ now }: { now: number }) {
               <span className="card-title">
                 {p.advancing_ids.length} advance: {p.advancing_ids.map(name).join(', ')}
               </span>
-              {waiting.length > 1 && (
-                <label className="row small-gap small">
-                  Next up:
-                  <select className="input select" value={nextDiv || waiting[0].id} onChange={(e) => setNextDiv(e.target.value)}>
-                    {waiting.map((d) => <option key={d.id} value={d.id}>Division {d.label}</option>)}
-                  </select>
-                </label>
-              )}
             </div>
             <button className="btn btn-primary" disabled={pending}
-              onClick={() => act({
-                type: 'confirm_cutoff',
-                division_id: p.division_id,
-                ...(nextDiv && waiting.some((d) => d.id === nextDiv) ? { next_division_id: nextDiv } : {}),
-              })}>
+              onClick={() => act({ type: 'confirm_cutoff', division_id: p.division_id })}>
               Confirm {p.advancing_ids.length} advance
             </button>
             {lastIsOut && (

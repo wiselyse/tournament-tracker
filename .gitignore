@@ -21,3 +21,6 @@ frontend/dev-dist/
 # Local working notes — kept on this machine, not published
 docs/HANDOFF.md
 CLAUDE.md
+
+# Local screenshot runs
+screenshots/

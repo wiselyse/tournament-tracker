@@ -58,6 +58,7 @@ class Round:
     ended_at: int | None = None
     paused_ms: int = 0
     paused_since: int | None = None
+    play_started_at: int | None = None  # "Start round" pressed; the round clock runs from here
 
 
 @dataclass
@@ -66,6 +67,7 @@ class Stalemate:
     player_ids: list[str]
     opened_at: int
     round_no: int | None
+    started_at: int | None = None  # "Start stalemate" pressed
 
 
 @dataclass
@@ -80,9 +82,11 @@ class State:
     stages: list[dict] = field(default_factory=list)  # {no, final, division_ids}
     active_division_id: str | None = None
     round: Round | None = None
-    rounds_played: int = 0
+    rounds_played: int = 0  # every round, all divisions: `Round.no` is this count
+    round_names: dict[int, dict] = field(default_factory=dict)  # Round.no → round_name()
     open_stalemates: dict[str, Stalemate] = field(default_factory=dict)
     stalemates_opened: int = 0
+    last_penalty: tuple | None = None  # (player id, kind, command group) of the newest penalty
     eliminations: list[str] = field(default_factory=list)  # player ids, in order
     champion_id: str | None = None
     completed: bool = False
@@ -100,6 +104,17 @@ class State:
     def active_division(self) -> Division | None:
         return self.divisions.get(self.active_division_id) if self.active_division_id else None
 
+    def next_division(self, after: str) -> str | None:
+        """Whose turn is next in the current stage: the divisions take turns in order (A, B,
+        C, A…), skipping any at or past their cutoff. `after` itself comes last."""
+        ids = self.stage["division_ids"] if self.stage else []
+        i = ids.index(after) if after in ids else -1
+        for k in range(1, len(ids) + 1):
+            d = ids[(i + k) % len(ids)]
+            if self.divisions[d].status in ("waiting", "playing"):
+                return d
+        return None
+
     def alive_in(self, division_id: str) -> list[str]:
         return [
             p for p in self.divisions[division_id].player_ids if self.players[p].status in ALIVE
@@ -107,6 +122,17 @@ class State:
 
     def name_of(self, pid: str) -> str:
         return self.players[pid].name
+
+
+def round_name(state: State, div_id: str | None, n: int) -> dict:
+    """How round `n` of a division is shown: each division (and the final table) counts its
+    own rounds, so Division B's first round is "Division B · Round 1", not "Round 2"."""
+    div = state.divisions.get(div_id) if div_id else None
+    if div is None or (div.final and len(state.stages) == 1):  # one table all night
+        return {"n": n, "name": f"Round {n}", "short": f"R{n}"}
+    if div.final:
+        return {"n": n, "name": f"Final table · Round {n}", "short": f"F·R{n}"}
+    return {"n": n, "name": f"Division {div.label} · Round {n}", "short": f"{div.label}·R{n}"}
 
 
 def _names(state: State, ids) -> str:
@@ -197,6 +223,8 @@ def apply(state: State, ev: Event) -> None:
     elif t in ("RoundStarted", "SeatsRerolled"):
         if t == "RoundStarted":
             state.rounds_played = p["round_no"]
+            if p.get("division_id"):  # older logs: the division that last started
+                state.active_division_id = p["division_id"]
             state.round = Round(
                 p["round_no"],
                 state.active_division_id,
@@ -205,7 +233,14 @@ def apply(state: State, ev: Event) -> None:
                 state.table,
                 ev.at,
             )
-            label = f"Round {p['round_no']} · {len(p['seat_assignment'])} players"
+            div_id = state.active_division_id
+            n = 1 + sum(1 for x in state.round_names.values() if x["division_id"] == div_id)
+            state.round_names[p["round_no"]] = {
+                "division_id": div_id,
+                **round_name(state, div_id, n),
+            }
+            label = f"Round {n} · {len(p['seat_assignment'])} players"
+            extra.update(division_id=state.active_division_id)
         else:
             r = state.round
             r.seats, r.empty_gap, r.table = (
@@ -252,6 +287,7 @@ def apply(state: State, ev: Event) -> None:
         n = pl.penalties.get(p["kind"], 0) + 1
         pl.penalties[p["kind"]] = n
         label = f"{pl.name} — {PENALTY_LABELS[p['kind']]} ({_ordinal(n)})"
+        state.last_penalty = (pl.id, p["kind"], ev.group)
         if p["kind"] == "card_pass":
             forfeit = n >= state.rules.card_pass_forfeit_at
             label += " · card forfeit" if forfeit else " · warning"
@@ -262,7 +298,9 @@ def apply(state: State, ev: Event) -> None:
         reason = p["reason"]
         if pl.division_id:
             pl.out_remaining = len(state.alive_in(pl.division_id))
-        pl.status = {"round": "out", "dq": "dq", "withdrawn": "withdrawn"}[reason]
+        pl.status = {"round": "out", "stalemate": "out", "dq": "dq", "withdrawn": "withdrawn"}[
+            reason
+        ]
         # Only a player in the running round goes out "in" it (not one waiting elsewhere).
         r = state.round
         playing = r is not None and not r.ended and pl.division_id == r.division_id
@@ -279,10 +317,20 @@ def apply(state: State, ev: Event) -> None:
             div.status = "cutoff"
         label = {
             "round": f"{pl.name} out",
+            "stalemate": f"{pl.name} out (Stalemate)",
             "dq": f"{pl.name} disqualified",
-            "withdrawn": f"{pl.name} withdrew",
+            "withdrawn": f"{pl.name} out (Withdrew)",
         }[reason]
         extra.update(player_ids=[pl.id], reason=reason)
+        lp = state.last_penalty
+        if reason == "dq" and lp and lp[0] == pl.id and lp[2] == ev.group:
+            # Ejected by the penalty logged in the same action: one line says both.
+            label += f" ({PENALTY_LABELS[lp[1]]})"
+            extra.update(penalty_kind=lp[1])
+        if p.get("winner_id"):
+            # Winner first: "Joe wins the round · John out".
+            label = f"{state.name_of(p['winner_id'])} wins the round · {label}"
+            extra.update(winner_id=p["winner_id"])
 
     elif t == "RoundEnded":
         r = state.round
@@ -290,7 +338,16 @@ def apply(state: State, ev: Event) -> None:
         if r.paused_since is not None:  # an out during a stoppage closes it
             r.paused_ms += ev.at - r.paused_since
             r.paused_since = None
-        label = f"Round {p['round_no']} ended"
+        label = f"{state.round_names[r.no]['name']} ended"
+
+    elif t == "PlayStarted":
+        if p.get("stalemate_id"):
+            state.open_stalemates[p["stalemate_id"]].started_at = ev.at
+            label = "Stalemate started"
+            extra.update(stalemate_id=p["stalemate_id"])
+        else:
+            state.round.play_started_at = ev.at
+            label = f"{state.round_names[state.round.no]['name']} started"
 
     elif t == "StoppageStarted":
         state.round.paused_since = ev.at
@@ -307,7 +364,8 @@ def apply(state: State, ev: Event) -> None:
         div.status, div.advancing_ids = "complete", list(p["advancing_ids"])
         for pid in div.advancing_ids:
             state.players[pid].status = "advanced"
-        state.active_division_id = None
+        if state.active_division_id == div.id:
+            state.active_division_id = None
         label = f"Division {div.label}: {len(div.advancing_ids)} advance"
 
     elif t == "TournamentCompleted":

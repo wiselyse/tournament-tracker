@@ -17,10 +17,12 @@ export function useServerOffset(serverNow: number) {
   return useMemo(() => serverNow - Date.now(), [serverNow])
 }
 
+/** Playing time: from "Start round" (0 until then), stoppages excluded. */
 export function roundElapsed(r: Round, now: number): number {
+  if (r.play_started_at == null) return 0
   const end = r.ended && r.ended_at ? r.ended_at : now
   const paused = r.paused_ms + (r.paused_since != null ? end - r.paused_since : 0)
-  return end - r.started_at - paused
+  return end - r.play_started_at - paused
 }
 
 export function Elapsed({ since, now }: { since: number; now: number }) {

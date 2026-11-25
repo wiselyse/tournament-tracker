@@ -31,6 +31,7 @@ export interface EmptyGap {
   seats: [number, number]
   x: number
   y: number
+  rot: number // the missing spoon's heading, like Spoon.rot
 }
 
 export interface Geometry {
@@ -40,11 +41,22 @@ export interface Geometry {
   empty_gap: EmptyGap | null
 }
 
-export interface Round extends Geometry {
+/** How a round is shown: each division (and the final table) counts its own rounds. */
+export interface RoundName {
+  n: number // its number within its division
+  name: string // "Division B · Round 1", "Final table · Round 2", "Round 3" (one table)
+  short: string // "B·R1", "F·R2", "R3"
+  division_id: string | null
+}
+/** Global round no (the key everywhere) → how it's shown. */
+export type RoundNames = Record<number, RoundName>
+
+export interface Round extends Geometry, RoundName {
   no: number
   dealers: number[] // seat numbers: [dealer] or [dealer, second dealer]
   division_id: string
-  started_at: number
+  started_at: number // seats drawn
+  play_started_at: number | null // "Start round" pressed: the round clock runs from here
   ended: boolean
   ended_at: number | null
   paused_ms: number
@@ -92,6 +104,8 @@ export interface TimelineEntry {
   loser_ids?: string[]
   reason?: string
   kind?: string
+  penalty_kind?: string // a DQ caused by the penalty logged in the same action
+  division_id?: string // RoundStarted: whose turn it is
   count?: number
 }
 
@@ -130,7 +144,8 @@ export interface TournamentState {
   next_division_id: string | null
   round: Round | null
   rounds_played: number
-  open_stalemates: { id: string; player_ids: string[]; opened_at: number }[]
+  round_names: RoundNames
+  open_stalemates: { id: string; player_ids: string[]; opened_at: number; started_at: number | null }[]
   players: Player[]
   prompts: Prompt[]
   timeline: TimelineEntry[]
@@ -195,26 +210,34 @@ export interface ReportPlayer {
   rounds: number[]
   stalemates_won: number
   stalemates_lost: number
+  round_wins: number // rounds won (four of a kind), when recorded
   penalties: number
   marks: ReportMark[]
 }
 
-export interface ReportRound {
+export interface ReportRound extends RoundName {
   no: number
   division_id: string
   started_at: number
+  play_started_at: number | null
   ended_at: number | null
   ms: number | null // playing time, stoppages excluded
   players: number
   out: string[]
+  outs: { player_id: string; reason: 'round' | 'stalemate' | 'dq' | 'withdrawn' }[]
+  winner_id: string | null // got four of a kind, when recorded
   stalemates: number
+  stalemate_results: { player_ids: string[]; loser_ids: string[] }[]
   penalties: number
+  penalty_list: { player_id: string; kind: string }[]
+  seating?: Geometry & { dealers: number[] } // seats carry player_id
 }
 
 export interface Report {
   completed: boolean
   champion_id: string | null
   rounds: ReportRound[]
+  round_names: RoundNames
   players: ReportPlayer[]
   stats: {
     players: number
@@ -228,5 +251,6 @@ export interface Report {
     longest_round: { no: number; ms: number } | null
     shortest_round: { no: number; ms: number } | null
     most_stalemates_won: { player_id: string; count: number } | null
+    most_round_wins: { player_id: string; count: number } | null
   }
 }

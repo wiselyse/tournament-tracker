@@ -77,11 +77,10 @@ export function Settings() {
         <section className="stack-lg">
           <h2 className="section-label">DEFAULT TABLE</h2>
           <TableFields table={table} onChange={setTable} preview={pv.data} />
+          {/* Same width as the spoon layout choices above it. */}
+          <button className="btn btn-primary btn-lg btn-block" onClick={save} disabled={!q.data}>Save settings</button>
+          {msg && <p className={msg.ok ? 'ok-text' : 'error-banner'} role="status">{msg.text}</p>}
         </section>
-      </div>
-      {msg && <p className={msg.ok ? 'ok-text' : 'error-banner'} role="status">{msg.text}</p>}
-      <div className="row">
-        <button className="btn btn-primary btn-lg" onClick={save} disabled={!q.data}>Save settings</button>
       </div>
     </div>
   )

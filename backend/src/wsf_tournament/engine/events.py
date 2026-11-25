@@ -19,6 +19,7 @@ EVENT_TYPES = (
     "PenaltyLogged",
     "PlayerEliminated",
     "RoundEnded",
+    "PlayStarted",  # the organiser started the round's (or a stalemate's) clock
     "StoppageStarted",
     "StoppageEnded",
     "DivisionCutoffConfirmed",

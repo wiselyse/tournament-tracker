@@ -4,7 +4,6 @@ import { statusChip } from '../state/describe'
 import { useTheme } from '../theme/useTheme'
 import { Icon } from './Icon'
 import { Toast } from './Toast'
-import { RewoundBanner } from '../screens/Timeline'
 
 const NAV = [
   { to: 'live', label: 'Live', icon: 'live' },
@@ -55,7 +54,7 @@ function Frame() {
   const { state, undo, redo, pending } = useT()
   const chip = statusChip(state)
   return (
-    <div className={`app${state.cursor < state.head ? ' is-rewound' : ''}`}>
+    <div className="app">
       <nav className="rail" aria-label="Main">
         <Mark />
         {NAV.map((n) => (
@@ -85,7 +84,6 @@ function Frame() {
           </button>
           <ThemeButton />
         </header>
-        <RewoundBanner state={state} />
         <Outlet />
       </div>
       <nav className="tabbar" aria-label="Main">

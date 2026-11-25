@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router'
-import type { Player } from '../api/types'
-import { useConfirm } from '../components/Confirm'
+import type { Player, RoundNames } from '../api/types'
 import { Icon } from '../components/Icon'
 import { Sheet } from '../components/Sheet'
-import { divisionLabel, PENALTIES, placeLabel } from '../state/describe'
+import { divisionLabel, PENALTIES, placeLabel, roundShort } from '../state/describe'
+import { StageCards } from './live/Cards'
+import { usePlayerActions } from './live/PlayerActions'
+import { useNow, useServerOffset } from './live/Timer'
 import { useT } from '../state/tournament'
 import { clock } from './Timeline'
 
@@ -13,8 +15,8 @@ const STATUS: Record<string, string> = {
   in: 'Playing', waiting: 'Waiting', advanced: 'Advanced', out: 'Out', dq: 'DQ', withdrawn: 'Withdrew',
 }
 
-function statusText(p: Player) {
-  if ((p.status === 'out' || p.status === 'dq') && p.out_round != null) return `${STATUS[p.status]} · R${p.out_round}`
+function statusText(p: Player, names: RoundNames) {
+  if ((p.status === 'out' || p.status === 'dq') && p.out_round != null) return `${STATUS[p.status]} · ${roundShort(names, p.out_round)}`
   return STATUS[p.status]
 }
 
@@ -31,23 +33,18 @@ function order(a: Player, b: Player) {
 }
 
 export function Players() {
-  const { state, act, pending } = useT()
-  const confirm = useConfirm()
+  const { state, pending } = useT()
+  const now = useNow(useServerOffset(state.server_now))
+  const actions = usePlayerActions()
   const [search, setSearch] = useState('')
   const [params] = useSearchParams()
   const [openId, setOpenId] = useState<string | null>(params.get('open')) // from Bracket/Report links
   const [editing, setEditing] = useState<Player | null>(null)
-  const [penaltyFor, setPenaltyFor] = useState<Player | null>(null)
   const [adding, setAdding] = useState(false)
   const done = state.tournament.completed
   const needle = search.trim().toLowerCase()
   const players = [...state.players].filter((p) => !needle || p.name.toLowerCase().includes(needle)).sort(order)
   const alive = state.players.filter((p) => ALIVE.has(p.status)).length
-
-  const disqualify = async (p: Player) => {
-    if (await confirm({ title: `Disqualify ${p.name}?`, body: 'They are removed from the tournament.', confirmLabel: 'Disqualify', destructive: true }))
-      act({ type: 'disqualify', player_id: p.id })
-  }
 
   return (
     <div className="page page-wide players-page">
@@ -61,6 +58,8 @@ export function Players() {
         </button>
       </header>
 
+      {state.tournament.started && <StageCards now={now} />}
+
       <ul className="player-list">
         {players.map((p) => {
           const isOpen = openId === p.id
@@ -69,12 +68,12 @@ export function Players() {
           return (
             <li key={p.id} className={`player-row${live ? '' : ' gone'}`}>
               <button className="player-main" onClick={() => setOpenId(isOpen ? null : p.id)} aria-expanded={isOpen}>
-                <span className="player-place">{placeLabel(p) || '—'}</span>
+                <span className="player-place">{placeLabel(p, state.round_names) || '—'}</span>
                 <span className="player-name">{p.name}</span>
                 {p.id === state.tournament.champion_id ? (
                   <span className="status-chip s-advanced">Champion</span>
                 ) : (
-                  <span className={`status-chip s-${p.status}`}>{statusText(p)}</span>
+                  <span className={`status-chip s-${p.status}`}>{statusText(p, state.round_names)}</span>
                 )}
                 {p.division_id && state.tournament.uses_divisions && (
                   <span className="muted small hide-narrow">
@@ -86,16 +85,27 @@ export function Players() {
               </button>
               {isOpen && (
                 <div className="player-detail">
-                  <div className="row small-gap">
-                    <button className="btn btn-surface" disabled={pending} onClick={() => setEditing(p)}>Rename</button>
+                  {live && !done && (
+                    <div className="grid-3">
+                      <button className="btn btn-primary" disabled={!actions.canOut(p)} onClick={() => actions.markOut(p)}>Out</button>
+                      <button className="btn btn-surface" disabled={!actions.canStalemate(p)}
+                        onClick={() => actions.setAction({ kind: 'stalemate', ids: [p.id] })}>Stalemate</button>
+                      <button className="btn btn-surface" disabled={!actions.canPenalty(p)}
+                        onClick={() => actions.setAction({ kind: 'penalty', player: p })}>Penalty</button>
+                    </div>
+                  )}
+                  <div className="grid-3">
                     {live && !done && (
                       <>
-                        <button className="btn btn-surface" disabled={pending} onClick={() => setPenaltyFor(p)}>Log penalty</button>
-                        <button className="btn btn-ghost" disabled={pending} onClick={() => act({ type: 'withdraw', player_id: p.id })}>Withdraw</button>
-                        <button className="btn btn-ghost danger-text" disabled={pending} onClick={() => disqualify(p)}>Disqualify…</button>
+                        <button className="btn btn-ghost danger-text" disabled={pending} onClick={() => actions.eject(p)}>Eject</button>
+                        <button className="btn btn-ghost" disabled={pending} onClick={() => actions.withdraw(p)}>Withdraw</button>
                       </>
                     )}
+                    <button className="btn btn-surface" disabled={pending} onClick={() => setEditing(p)}>Rename</button>
                   </div>
+                  {live && !done && !actions.isSeated(p) && (
+                    <p className="muted small">{p.name} isn’t at the table this round, so Out and Stalemate are off.</p>
+                  )}
                   <h3 className="section-label">HISTORY</h3>
                   {history.length === 0 ? (
                     <p className="muted small">Nothing yet.</p>
@@ -103,7 +113,7 @@ export function Players() {
                     <ol className="history">
                       {history.map((e) => (
                         <li key={e.seq}>
-                          <span className="muted small">{clock(e.at)}{e.round_no != null ? ` · R${e.round_no}` : ''}</span>
+                          <span className="muted small">{clock(e.at)}{e.round_no != null ? ` · ${roundShort(state.round_names, e.round_no)}` : ''}</span>
                           <span>{e.label}</span>
                         </li>
                       ))}
@@ -118,34 +128,7 @@ export function Players() {
 
       {editing && <Rename player={editing} onClose={() => setEditing(null)} />}
       {adding && <AddPlayerSheet onClose={() => setAdding(false)} />}
-      {penaltyFor && (
-        <Sheet title={`Penalty for ${penaltyFor.name}`} onClose={() => setPenaltyFor(null)}>
-          <div className="list">
-            {PENALTIES.map((k) => (
-              <button
-                key={k.kind}
-                className="list-row"
-                disabled={pending}
-                onClick={async () => {
-                  const p = penaltyFor
-                  setPenaltyFor(null)
-                  if (state.rules.immediate_dq.includes(k.kind)) {
-                    const ok = await confirm({ title: `Disqualify ${p.name}?`, body: `${k.label} is an immediate disqualification.`, confirmLabel: 'Log and disqualify', destructive: true })
-                    if (!ok) return
-                  }
-                  act({ type: 'log_penalty', player_id: p.id, kind: k.kind })
-                }}
-              >
-                <span className="grow">{k.label}</span>
-                <span className="muted small">
-                  {penaltyFor.penalties[k.kind] ? `×${penaltyFor.penalties[k.kind]} · ` : ''}{k.rule}
-                  {state.rules.immediate_dq.includes(k.kind) ? ' · DQ' : ''}
-                </span>
-              </button>
-            ))}
-          </div>
-        </Sheet>
-      )}
+      {actions.sheet}
     </div>
   )
 }

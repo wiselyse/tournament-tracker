@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
-import type { TimelineEntry, TournamentState } from '../api/types'
+import type { ReactNode } from 'react'
+import type { TimelineEntry } from '../api/types'
+import { useConfirm } from '../components/Confirm'
 import { Icon } from '../components/Icon'
-import { fmtDuration, placeLabel } from '../state/describe'
+import { fmtDuration, placeLabel, roundName, roundShort } from '../state/describe'
 import { useT } from '../state/tournament'
 import { StalemateButtons } from './live/Cards'
 import { useNow, useServerOffset } from './live/Timer'
@@ -15,7 +17,7 @@ const FILTERS: { id: Filter; label: string; types: string[] }[] = [
   { id: 'stoppages', label: 'Stoppages', types: ['StoppageStarted'] },
 ]
 // Bookkeeping that the round header or a merged row already says.
-const HIDDEN = new Set(['RoundStarted', 'RoundEnded', 'StoppageEnded'])
+const HIDDEN = new Set(['RoundStarted', 'RoundEnded', 'StoppageEnded', 'PlayStarted'])
 
 interface Section {
   key: string
@@ -42,7 +44,9 @@ export function sections(timeline: TimelineEntry[]): Section[] {
     if (e.type === 'DivisionStarted' && e.label.startsWith('Division ')) division = e.label.replace(' started', '')
     else if (e.type === 'DivisionStarted') division = e.label.startsWith('Final') ? 'Final table' : null
     if (e.type === 'RoundStarted') {
-      out.push({ key: `r${e.round_no}`, kind: 'round', round: e.round_no, division, start: e, end: null, entries: [] })
+      // Divisions take turns, so each round names its own (older logs: the last one started).
+      const own = e.division_id === 'final' ? (division ? 'Final table' : null) : e.division_id ? `Division ${e.division_id}` : division
+      out.push({ key: `r${e.round_no}`, kind: 'round', round: e.round_no, division: own, start: e, end: null, entries: [] })
       continue
     }
     if (e.type === 'RoundEnded') out[out.length - 1].end = e.at
@@ -55,6 +59,26 @@ export function sections(timeline: TimelineEntry[]): Section[] {
     cur.entries.push(e)
   }
   return out
+}
+
+/** When the round's clock started ("Start round"); older rounds: when seats were drawn. */
+function began(s: Section): number | null {
+  const start = s.entries.find((e) => e.type === 'PlayStarted' && !e.stalemate_id)
+  return start ? start.at : s.entries.some((e) => e.type === 'PlayStarted') ? null : s.start!.at
+}
+
+function roundTime(s: Section, now: number, live: boolean): string {
+  const b = began(s)
+  if (b == null) return s.end ? '—' : 'not started'
+  return s.end ? fmtDuration(s.end - b) : live ? `live ${fmtDuration(now - b)}` : 'live'
+}
+
+/** Every "1st", "10th"… in the text with its suffix raised and smaller. */
+function ordinals(text: string): ReactNode {
+  const parts = text.split(/(\d+)(st|nd|rd|th)\b/)
+  if (parts.length === 1) return text
+  // split() with two groups yields [text, number, suffix, text, number, suffix, …, text]
+  return parts.map((x, i) => (i % 3 === 2 ? <sup key={i} className="ord">{x}</sup> : x))
 }
 
 function roundSummary(s: Section, name: (id: string) => string): string {
@@ -79,6 +103,7 @@ function dotClass(e: TimelineEntry): string {
 
 export function Timeline() {
   const { state, rewind, pending, name } = useT()
+  const confirm = useConfirm()
   const now = useNow(useServerOffset(state.server_now))
   const [filter, setFilter] = useState<Filter>('all')
   const [selected, setSelected] = useState<number | null>(null)
@@ -91,22 +116,23 @@ export function Timeline() {
     s.kind === 'milestone' || (open[s.key] ?? (s.kind === 'round' && roundIdx.get(s.key)! >= rounds.length - 2))
   const types = FILTERS.find((f) => f.id === filter)!.types
   const byId = new Map(state.players.map((p) => [p.id, p]))
+  // A penalty that ejected the player is told on the "X disqualified (penalty)" line instead.
+  const ejectedBy = new Set(state.timeline.filter((e) => e.penalty_kind).map((e) => e.group))
 
   const stoppageLength = (e: TimelineEntry) => {
     const end = state.timeline.find((x) => x.seq > e.seq && (x.type === 'StoppageEnded' || x.type === 'RoundEnded'))
     return end ? fmtDuration(end.at - e.at) : 'ongoing'
   }
 
-  const describe = (e: TimelineEntry): string => {
+  const describe = (e: TimelineEntry): ReactNode => {
     if (e.type === 'StoppageStarted') return `Stoppage — ${stoppageLength(e)}`
     if (e.type === 'PlayerEliminated' && e.player_ids?.[0]) {
       const p = byId.get(e.player_ids[0])
-      const place = p ? placeLabel(p) : ''
-      return place && p?.status === 'out' ? `${e.label} · finishes ${place}` : e.label
+      const place = p?.status === 'out' ? placeLabel(p, state.round_names) : '' // DQ and withdrawals have no place
+      return ordinals(place ? `${e.label} (${place})` : e.label)
     }
-    if (e.type === 'StalemateResolved') return `${e.label}. Branch merged, play continued`
     if (e.type === 'StalemateCancelled') return `${e.label}. Branch closed`
-    return e.label
+    return ordinals(e.label)
   }
 
   const jump = (key: string) => {
@@ -129,7 +155,9 @@ export function Timeline() {
         <div className="tl">
           <div className="tl-line" aria-hidden="true" />
           {secs.map((s) => {
-            const shown = s.entries.filter((e) => !HIDDEN.has(e.type) && (types.length === 0 || types.includes(e.type)))
+            const shown = s.entries.filter((e) =>
+              !HIDDEN.has(e.type) && !(e.type === 'PenaltyLogged' && ejectedBy.has(e.group)) &&
+              (types.length === 0 || types.includes(e.type) || (e.penalty_kind && filter === 'penalties')))
             if (s.kind !== 'round' && shown.length === 0) return null
             const expanded = isOpen(s)
             return (
@@ -146,11 +174,11 @@ export function Timeline() {
                     <span className="tl-time">{clock(s.start!.at)}</span>
                     <span className="tl-dot-col"><span className="tl-dot round" /></span>
                     <button className="tl-round-title" onClick={() => setOpen((o) => ({ ...o, [s.key]: false }))} aria-expanded>
-                      ROUND {s.round}
+                      ROUND {state.round_names[s.round!]?.n ?? s.round}
                     </button>
                     {s.division && <span className="chip">{s.division}</span>}
                     <span className="muted">
-                      {s.start!.label.split('·')[1]?.trim()} · {s.end ? fmtDuration(s.end - s.start!.at) : `live ${fmtDuration(now - s.start!.at)}`}
+                      {s.start!.label.split('·')[1]?.trim()} · {roundTime(s, now, true)}
                     </span>
                   </div>
                 ) : (
@@ -158,10 +186,10 @@ export function Timeline() {
                     <span className="tl-time">{clock(s.start!.at)}</span>
                     <span className="tl-dot-col"><span className="tl-dot hollow" /></span>
                     <button className="tl-fold" onClick={() => setOpen((o) => ({ ...o, [s.key]: true }))} aria-expanded={false}>
-                      <span className="tl-fold-title">ROUND {s.round}</span>
-                      {s.division && <span className="chip hide-narrow">{s.division}</span>}
+                      {/* The title carries the division ("B·R1"): there's no room for the chip on phones. */}
+                      <span className="tl-fold-title">{s.division ? roundShort(state.round_names, s.round!) : `ROUND ${s.round}`}</span>
                       <span className="muted">
-                        {s.end ? fmtDuration(s.end - s.start!.at) : 'live'} · {roundSummary(s, name)} · {shown.length} event{shown.length === 1 ? '' : 's'}
+                        {roundTime(s, now, false)} · {roundSummary(s, name)} · {shown.length} event{shown.length === 1 ? '' : 's'}
                       </span>
                       <span className="grow" />
                       <span className="muted hide-narrow" aria-hidden="true">Show ▾</span>
@@ -181,8 +209,17 @@ export function Timeline() {
                           {describe(e)}
                         </button>
                         {sel && (
-                          <button className="btn btn-rewind" disabled={pending} onClick={() => { setSelected(null); rewind(e.seq) }}>
-                            <Icon name="rewind" size={16} /> Rewind to here
+                          <button className="btn btn-rewind" disabled={pending} aria-label="Rewind to here"
+                            onClick={async () => {
+                              setSelected(null)
+                              const ok = await confirm({
+                                title: `Rewind to ${clock(e.at)}?`,
+                                body: 'The tournament goes back to this moment. Redo brings the later events back; your next action replaces them.',
+                                confirmLabel: 'Rewind',
+                              })
+                              if (ok) rewind(e.seq)
+                            }}>
+                            <Icon name="rewind" size={18} />
                           </button>
                         )}
                       </div>
@@ -196,7 +233,7 @@ export function Timeline() {
               <span className="tl-time sea-text strong">NOW</span>
               <span className="tl-dot-col"><span className="tl-dot sea pulse" /></span>
               <div className="tl-now-card">
-                <span>Stalemate round in progress · {fmtDuration(now - sm.opened_at)}</span>
+                <span>{sm.started_at == null ? 'Stalemate waiting to start' : `Stalemate round in progress · ${fmtDuration(now - sm.started_at)}`}</span>
                 <StalemateButtons id={sm.id} players={sm.player_ids} />
               </div>
             </div>
@@ -212,8 +249,8 @@ export function Timeline() {
             return (
               <button key={s.key} className={`jump${live ? ' live' : ''}`} onClick={() => jump(s.key)}>
                 <span className="row">
-                  <span className="jump-title grow">Round {s.round}</span>
-                  <span className="muted small">{s.end ? fmtDuration(s.end - s.start!.at) : 'live'}</span>
+                  <span className="jump-title grow">{roundName(state.round_names, s.round!)}</span>
+                  <span className="muted small">{roundTime(s, now, false)}</span>
                 </span>
                 <span className="small">{roundSummary(s, name)}</span>
               </button>
@@ -225,24 +262,6 @@ export function Timeline() {
           you're asked first.
         </p>
       </aside>
-    </div>
-  )
-}
-
-/** Shown on every tournament screen while the cursor is behind the head. */
-export function RewoundBanner({ state }: { state: TournamentState }) {
-  const { rewind, pending } = useT()
-  if (state.cursor >= state.head) return null
-  const last = state.timeline[state.timeline.length - 1]
-  return (
-    <div className="rewound" role="status">
-      <Icon name="rewind" size={18} />
-      <span className="grow">
-        Viewing the tournament as of <b>{last ? clock(last.at) : 'the start'}</b>
-        {last ? ` (${last.label})` : ''}. {state.head - state.cursor} later event{state.head - state.cursor === 1 ? '' : 's'} hidden;
-        your next action replaces them.
-      </span>
-      <button className="btn btn-primary" disabled={pending} onClick={() => rewind(state.head)}>Return to latest</button>
     </div>
   )
 }

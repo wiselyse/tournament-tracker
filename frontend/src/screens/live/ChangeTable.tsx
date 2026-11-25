@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { TableConfig } from '../../api/types'
 import { Sheet } from '../../components/Sheet'
 import { tableOnly, TableFields, usePreview } from '../../components/TableStep'
+import { remaining } from '../../state/describe'
 import { useT } from '../../state/tournament'
 
 export function tableSummary(t: TableConfig): string {
@@ -15,7 +16,7 @@ export function tableSummary(t: TableConfig): string {
 export function ChangeTable({ onClose }: { onClose: () => void }) {
   const { state, act, pending } = useT()
   const [table, setTable] = useState<TableConfig>(() => tableOnly(state.table_config))
-  const playing = state.players.filter((p) => p.status === 'in').length
+  const playing = remaining(state)
   const alive = state.players.filter((p) => ['in', 'waiting', 'advanced'].includes(p.status)).length
   const pv = usePreview(state.tournament.started ? Math.max(playing, 2) : alive, table)
   const live = !!state.round && !state.round.ended

@@ -24,7 +24,12 @@ def table_geometry(
         spoons, marker = between_layout(cfg, [arcs[i] for i in active], e, inset)
         if marker:
             a, b = active[e], active[(e + 1) % len(active)]
-            empty = {"seats": [a + 1, b + 1], "x": marker["x"], "y": marker["y"]}
+            empty = {
+                "seats": [a + 1, b + 1],
+                "x": marker["x"],
+                "y": marker["y"],
+                "rot": marker["rot"],
+            }
     else:
         spoons = center_layout(cfg, len(active)) if active else []
     return {
@@ -46,8 +51,10 @@ def _round_view(s: State) -> dict | None:
         seat["active"] = s.players[pid].status == "in"
     return {
         "no": r.no,
+        **s.round_names[r.no],  # n, name, short: its number within its division
         "division_id": r.division_id,
         "started_at": r.started_at,
+        "play_started_at": r.play_started_at,
         "ended": r.ended,
         "ended_at": r.ended_at,
         "paused_ms": r.paused_ms,
@@ -85,18 +92,18 @@ def _prompts(s: State) -> list[dict]:
     for pl in s.players.values():
         if pl.status in ALIVE and pl.penalties.get("false_grab", 0) >= s.rules.false_grab_dq_at:
             out.append({"type": "dq", "player_id": pl.id, "kind": "false_grab"})
-    div = s.active_division
-    if div and div.status == "cutoff":
-        out.append({"type": "cutoff", "division_id": div.id, "advancing_ids": s.alive_in(div.id)})
+    # Any division can reach its cutoff, even away from the table (a DQ or withdrawal).
+    for d in s.stage["division_ids"] if s.stage else []:
+        if s.divisions[d].status == "cutoff":
+            out.append({"type": "cutoff", "division_id": d, "advancing_ids": s.alive_in(d)})
     return out
 
 
 def state_view(s: State) -> dict:
     finish = places(s)
-    stage = s.stage
-    waiting = (
-        [d for d in stage["division_ids"] if s.divisions[d].status == "waiting"] if stage else []
-    )
+    # Whose turn comes after this round (divisions take turns); none if it's the same one.
+    nxt = s.next_division(s.active_division_id) if s.active_division_id else None
+    upcoming = nxt if nxt != s.active_division_id else None
     total = sum(1 for p in s.players.values() if p.status != "withdrawn")
     return {
         "tournament": {
@@ -131,11 +138,17 @@ def state_view(s: State) -> dict:
             for st in s.stages
         ],
         "active_division_id": s.active_division_id,
-        "next_division_id": waiting[0] if waiting else None,
+        "next_division_id": upcoming,
         "round": _round_view(s),
         "rounds_played": s.rounds_played,
+        "round_names": s.round_names,
         "open_stalemates": [
-            {"id": sm.id, "player_ids": sm.player_ids, "opened_at": sm.opened_at}
+            {
+                "id": sm.id,
+                "player_ids": sm.player_ids,
+                "opened_at": sm.opened_at,
+                "started_at": sm.started_at,
+            }
             for sm in s.open_stalemates.values()
         ],
         "players": [

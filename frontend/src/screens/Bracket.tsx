@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import type { Division, Stage } from '../api/types'
-import { APP_SIZE, SurvivalChart } from '../components/SurvivalChart'
+import type { Division, ReportMark, ReportPlayer, RoundNames, Stage } from '../api/types'
+import { APP_SIZE, finishLabel, SurvivalChart } from '../components/SurvivalChart'
 import { useT, useReport } from '../state/tournament'
+import { roundName, roundShort } from '../state/describe'
 
 const STATUS: Record<Division['status'], string> = {
-  complete: 'Complete', playing: 'Playing now', cutoff: 'Cutoff reached', waiting: 'Waiting',
+  complete: 'Complete', playing: 'In progress', cutoff: 'Cutoff reached', waiting: 'Waiting',
 }
 
 export function Bracket() {
@@ -34,6 +35,15 @@ export function Bracket() {
 function Survival() {
   const report = useReport()
   const nav = useNavigate()
+  const box = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(1000)
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [report.data])
   if (!report.data) return <p className="muted pad">{report.isError ? report.error.message : 'Loading…'}</p>
   if (!report.data.rounds.length) return <p className="muted pad">The chart fills in once the first round starts.</p>
   return (
@@ -48,11 +58,15 @@ function Survival() {
         <span className="grow" />
         <span className="hide-narrow">Tap a player for their full history</span>
       </div>
-      <div className="survival-scroll">
+      <ul className="survival-list" aria-label="Rounds by player">
+        {report.data.players.map((p) => <CompactRow key={p.id} p={p} names={report.data.round_names} onName={() => nav(`../players?open=${p.id}`, { relative: 'path' })} />)}
+      </ul>
+      <div className="survival-scroll" ref={box}>
         <SurvivalChart
           report={report.data}
-          // Fit the rounds to a tablet-wide screen; long nights scroll sideways.
-          size={{ ...APP_SIZE, colW: Math.max(40, Math.min(APP_SIZE.colW, Math.floor(860 / report.data.rounds.length))) }}
+          // Fit the rounds to the screen so the placings on the right stay in view (a tablet held
+          // upright included); only very long nights scroll sideways.
+          size={{ ...APP_SIZE, colW: Math.max(28, Math.min(APP_SIZE.colW, Math.floor((width - APP_SIZE.nameW - 90) / report.data.rounds.length))) }}
           accent="#d9b877"
           ground="var(--bg)"
           text="var(--text)"
@@ -60,6 +74,33 @@ function Survival() {
         />
       </div>
     </div>
+  )
+}
+
+const MARK: Record<ReportMark['type'], [string, string]> = {
+  won: ['lg-dot', 'won a stalemate'], lost: ['lg-ring', 'lost a stalemate'], penalty: ['lg-diamond', 'penalty'],
+  out: ['lg-x', 'out'], dq: ['lg-x', 'disqualified'], withdrawn: ['lg-x', 'withdrew'],
+}
+
+/** Phones: one line per player, each event as its symbol + round number, no sideways scroll. */
+function CompactRow({ p, names, onName }: { p: ReportPlayer; names: RoundNames; onName: () => void }) {
+  const champ = p.status === 'champion'
+  return (
+    <li className={`sl-row${champ ? ' champ' : ''}`}>
+      <button className="sl-name" onClick={onName}>{p.name}</button>
+      <span className="sl-marks">
+        {p.marks.map((m, i) => {
+          const [cls, what] = MARK[m.type]
+          return (
+            <span key={i} className="sl-mark" title={`${roundName(names, m.round)}: ${what}`} aria-label={`${roundName(names, m.round)}: ${what}`}>
+              {cls === 'lg-x' ? <b className="lg-x" aria-hidden="true">×</b> : <i className={cls} aria-hidden="true" />}{roundShort(names, m.round)}
+            </span>
+          )
+        })}
+        {!p.marks.length && <span className="muted">{champ ? 'Won' : p.rounds.length ? 'Still in' : ''}</span>}
+      </span>
+      <span className="sl-finish">{finishLabel(p)}</span>
+    </li>
   )
 }
 
@@ -80,7 +121,9 @@ function Stages() {
       <article key={d.id} className={`div-card s-${d.status}`}>
         <div className="row small-gap">
           <span className="div-name grow">{d.id === 'final' ? 'Final table' : `Division ${d.label}`}</span>
-          <span className={`div-status s-${d.status}`}>{d.id === state.next_division_id ? 'Up next' : STATUS[d.status]}</span>
+          <span className={`div-status s-${d.status}`}>
+            {d.id === state.active_division_id && d.status === 'playing' ? 'Playing now' : d.id === state.next_division_id ? 'Up next' : STATUS[d.status]}
+          </span>
         </div>
         <span className="muted small">{meta}</span>
         <ul className="div-chips">
@@ -120,7 +163,7 @@ function Stages() {
 
   const last = state.stages[state.stages.length - 1]
   return (
-    <div className="stages">
+    <div className="stages"><div className="stages-row">
       {state.stages.map((st, i) => (
         <div key={st.no} className="stage-col-wrap">
           {i > 0 && pool(state.stages[i - 1])}
@@ -144,6 +187,6 @@ function Stages() {
           </section>
         </div>
       )}
-    </div>
+    </div></div>
   )
 }

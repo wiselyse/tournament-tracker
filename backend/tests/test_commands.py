@@ -82,6 +82,7 @@ def test_mark_out_starts_a_new_random_round():
     first = g.seated()
     v = g.out()
     assert v["round"]["no"] == 2
+    assert (v["round"]["name"], v["round"]["short"]) == ("Round 2", "R2")  # one table: as before
     assert len(v["round"]["seats"]) == 7
     assert len(v["round"]["spoons"]) == 6
     assert first[0] not in g.seated()
@@ -151,8 +152,27 @@ def test_change_table_applies_at_next_seating_or_on_reroll():
         g.do("change_table", table={"shape": "triangle"})
 
 
+def test_round_and_stalemate_clocks_start_when_the_organiser_says():
+    g = started(4)
+    assert g.view["round"]["play_started_at"] is None  # seats drawn, clock not running
+    with pytest.raises(CommandError, match="start the round first"):
+        g.do("start_stoppage")
+    v = g.do("start_play")
+    assert v["round"]["play_started_at"] is not None
+    with pytest.raises(CommandError, match="already started"):
+        g.do("start_play")
+    a, b = g.seated()[:2]
+    v = g.do("open_stalemate", player_ids=[a, b])
+    assert v["open_stalemates"][0]["started_at"] is None
+    v = g.do("start_play", stalemate_id="s1")
+    assert v["open_stalemates"][0]["started_at"] is not None
+    with pytest.raises(CommandError, match="already started"):
+        g.do("start_play", stalemate_id="s1")
+
+
 def test_stoppage_pauses_the_round_timer():
     g = started(4)
+    g.do("start_play")
     g.do("start_stoppage")
     assert g.view["round"]["paused_since"] is not None
     g.do("end_stoppage")
@@ -168,6 +188,7 @@ def test_stoppage_pauses_the_round_timer():
 
 def test_out_during_stoppage_closes_it():
     g = started(4)
+    g.do("start_play")
     g.do("start_stoppage")
     g.out()
     assert g.view["round"]["paused_since"] is None
@@ -193,18 +214,34 @@ def test_stalemates():
         g.do("mark_out", player_id=g.seated()[6])
     with pytest.raises(CommandError, match="stalemate's players"):
         g.do("resolve_stalemate", stalemate_id="s1", loser_id=c)
+    # Rule 2.2.2: losing the stalemate loses the round. The loser goes out, the round ends
+    # (closing the other open stalemate) and the rest are reseated.
     v = g.do("resolve_stalemate", stalemate_id="s1", loser_id=a)
-    assert all(p["status"] == "in" for p in v["players"])  # conceding a spoon isn't going out
-    assert v["timeline"][-1]["winner_ids"] == [b]
-    # Rule 2.2.2 (2026): 3 players, 2 spoons; the one left without a spoon concedes.
-    v = g.do("resolve_stalemate", stalemate_id="s2", loser_id=d)
-    assert v["timeline"][-1]["winner_ids"] == [c, e] and v["timeline"][-1]["loser_ids"] == [d]
-    assert "concedes" in v["timeline"][-1]["label"]
-    assert v["open_stalemates"] == []
-    g.do("open_stalemate", player_ids=[a, b])
-    g.do("cancel_stalemate", stalemate_id="s3")
-    assert g.view["open_stalemates"] == []
-    assert g.view["round"]["no"] == 1  # stalemates never end the round
+    assert next(p for p in v["players"] if p["id"] == a)["status"] == "out"
+    assert g.last_group_types() == [
+        "StalemateResolved",
+        "PlayerEliminated",
+        "StalemateCancelled",
+        "RoundEnded",
+        "RoundStarted",
+    ]
+    assert v["round"]["no"] == 2 and v["open_stalemates"] == []
+    resolved = next(e for e in v["timeline"] if e["type"] == "StalemateResolved")
+    assert resolved["winner_ids"] == [b]
+    assert v["timeline"][-4]["label"].endswith("out (Stalemate)")
+    # 3 players, 2 spoons: the one left without a spoon concedes and goes out.
+    a, b, c = g.seated()[:3]
+    g.do("open_stalemate", player_ids=[a, b, c])
+    v = g.do("resolve_stalemate", stalemate_id="s3", loser_id=b, winner_id=c)
+    resolved = [e for e in v["timeline"] if e["type"] == "StalemateResolved"][-1]
+    assert resolved["winner_ids"] == [a, c] and resolved["loser_ids"] == [b]
+    assert "concedes" in resolved["label"]
+    out = [e for e in v["timeline"] if e["type"] == "PlayerEliminated"][-1]
+    assert out["label"].startswith(f"{out['label'].split(' wins')[0]} wins the round · ")
+    assert v["round"]["no"] == 3
+    g.do("open_stalemate", player_ids=g.seated()[:2])
+    g.do("cancel_stalemate", stalemate_id="s4")
+    assert g.view["open_stalemates"] == [] and g.view["round"]["no"] == 3  # cancelling doesn't
     g.out()
 
 
@@ -222,6 +259,9 @@ def test_second_false_grab_prompts_dq():
     v = g.do("disqualify", player_id=kit)
     assert next(p for p in v["players"] if p["id"] == kit)["status"] == "dq"
     assert v["prompts"] == []
+    assert v["timeline"][-1]["label"].endswith(
+        "disqualified"
+    )  # a separate decision: no penalty named
 
 
 @pytest.mark.parametrize("kind", ["spoon_tamper", "hand_manipulation"])
@@ -231,6 +271,12 @@ def test_immediate_dq_in_one_group_and_round_goes_on(kind):
     v = g.do("log_penalty", player_id=kit, kind=kind)
     assert g.last_group_types() == ["PenaltyLogged", "PlayerEliminated"]
     assert next(p for p in v["players"] if p["id"] == kit)["status"] == "dq"
+    # One line for the timeline: the ejection names the penalty that caused it.
+    out = v["timeline"][-1]
+    assert out["label"].endswith(
+        f"disqualified ({kind.replace('_', ' ').replace('tamper', 'tampering')})"
+    )
+    assert out["penalty_kind"] == kind
     assert v["round"]["no"] == 1 and not v["round"]["ended"]
     assert len(v["round"]["spoons"]) == 4  # 5 active players left
     assert len(v["round"]["seats"]) == 6  # the seat stays until the next seating
@@ -313,7 +359,7 @@ def test_withdraw_before_start():
 # ---------------------------------------------------------------- divisions
 
 
-def test_21_players_two_divisions_then_final():
+def test_21_players_divisions_take_turns_then_final():
     g = started(21, seed=5)
     v = g.view
     assert v["tournament"]["uses_divisions"]
@@ -322,28 +368,51 @@ def test_21_players_two_divisions_then_final():
     assert [d["status"] for d in st["divisions"]] == ["playing", "waiting"]
     assert v["active_division_id"] == "A" and v["next_division_id"] == "B"
     assert len(v["round"]["seats"]) == 11
-    assert (
-        next(p for p in v["players"] if p["id"] in st["divisions"][1]["player_ids"])["status"]
-        == "waiting"
-    )
+    b_player = st["divisions"][1]["player_ids"][0]
+    assert next(p for p in v["players"] if p["id"] == b_player)["status"] == "waiting"
 
-    v = g.play_to_cutoff()  # 11 → 5
-    assert len(g.seated()) == 5 and v["round"]["ended"]
-    assert v["stages"][0]["divisions"][0]["status"] == "cutoff"
+    v = g.out()  # round 2 goes to B, round 3 back to A: they take turns
+    assert v["active_division_id"] == "B" and len(v["round"]["seats"]) == 10
+    assert v["next_division_id"] == "A"
+    assert v["round"]["name"] == "Division B · Round 1" and v["round"]["short"] == "B·R1"
+    v = g.out()
+    assert v["active_division_id"] == "A" and len(v["round"]["seats"]) == 10
+    # Each division counts its own rounds; the global `no` stays the key.
+    assert (v["round"]["no"], v["round"]["n"], v["round"]["name"]) == (3, 2, "Division A · Round 2")
+    assert [e["label"] for e in v["timeline"] if e["type"] == "RoundStarted"] == [
+        "Round 1 · 11 players",
+        "Round 1 · 10 players",
+        "Round 2 · 10 players",
+    ]
+    # Coming back to A doesn't redo its start: both targets stay what they were.
+    assert [d["advance_target"] for d in v["stages"][0]["divisions"]] == [5, 5]
+    assert sum(e["type"] == "DivisionStarted" for e in v["timeline"]) == 2
+
+    v = g.play_until(lambda v: v["prompts"])  # B (10 → 5) gets there before A (11 → 5)
+    assert v["prompts"][0]["division_id"] == "B" and v["round"]["ended"]
     assert g.last_group_types() == ["PlayerEliminated", "RoundEnded"]  # waits for the organiser
     with pytest.raises(CommandError, match="no round"):
         g.out()
-
-    v = g.confirm()
-    assert v["active_division_id"] == "B" and len(v["round"]["seats"]) == 10
-    assert v["stages"][0]["divisions"][0]["status"] == "complete"
+    v = g.confirm()  # B done; A still has a player to lose, so no new stage yet
+    assert len(v["stages"]) == 1 and v["active_division_id"] == "A"
+    assert v["stages"][0]["divisions"][1]["status"] == "complete"
     assert sum(p["status"] == "advanced" for p in v["players"]) == 5
+    assert v["next_division_id"] is None  # A plays every round now
 
-    g.play_to_cutoff()
+    g.play_until(lambda v: v["prompts"])
     v = g.confirm()
     assert len(v["stages"]) == 2 and v["stages"][1]["is_final"]
     assert len(v["stages"][1]["divisions"][0]["player_ids"]) == 10
     assert v["active_division_id"] == "final" and len(v["round"]["seats"]) == 10
+    assert v["round"]["name"] == "Final table · Round 1" and v["round"]["short"] == "F·R1"
+
+
+def test_four_divisions_rotate_and_skip_finished_ones():
+    g = started(30, seed=2)  # A 8, B 8, C 7, D 7
+    order = [g.view["active_division_id"]]
+    for _ in range(5):
+        order.append(g.out()["active_division_id"])
+    assert order == ["A", "B", "C", "D", "A", "B"]
 
 
 def test_30_players_runs_three_stages_to_a_champion():
@@ -367,24 +436,26 @@ def test_30_players_runs_three_stages_to_a_champion():
     assert next(p for p in v["players"] if p["id"] == champ)["finish_place"] == 1
 
 
-def test_choose_next_division():
-    g = started(30, seed=2)
-    g.play_to_cutoff()
-    with pytest.raises(CommandError, match="isn't waiting"):
-        g.confirm(next_division_id="A")
-    v = g.confirm(next_division_id="C")
-    assert v["active_division_id"] == "C" and v["next_division_id"] == "B"
-
-
 def test_confirm_requires_cutoff():
     g = started(21)
     with pytest.raises(CommandError, match="cutoff"):
-        g.confirm()
+        g.do("confirm_cutoff", division_id="A")
+
+
+def a_at(g, left):
+    """Play (confirming other divisions' cutoffs) until A has `left` players and A is up."""
+    while not (
+        g.alive("A") <= left
+        and g.view["active_division_id"] == "A"
+        and not g.view["round"]["ended"]
+    ):
+        g.confirm() if g.view["prompts"] else g.out()
+    return g.view
 
 
 def test_dq_can_trigger_the_cutoff_and_fewer_advance():
     g = started(21, seed=4)
-    g.out(5)  # A: 11 → 6, target 5
+    a_at(g, 6)  # A: 11 → 6, target 5
     v = g.do("disqualify", player_id=g.seated()[0])
     assert any(p["type"] == "cutoff" for p in v["prompts"])
     assert v["round"]["ended"]
@@ -392,6 +463,33 @@ def test_dq_can_trigger_the_cutoff_and_fewer_advance():
     assert len(next(p for p in v["prompts"] if p["type"] == "cutoff")["advancing_ids"]) == 4
     v = g.confirm()
     assert len(v["stages"][0]["divisions"][0]["advancing_ids"]) == 4
+
+
+def test_cutoff_away_from_the_table_is_skipped_and_confirmable():
+    g = started(21, seed=4)
+    g.play_until(lambda v: g.alive("B") == 6 and v["active_division_id"] == "A")
+    b_left = [p["id"] for p in g.view["players"] if p["division_id"] == "B" and p["status"] == "in"]
+    v = g.do("withdraw", player_id=b_left[0])  # B reaches its cutoff while A plays
+    assert [p["division_id"] for p in v["prompts"] if p["type"] == "cutoff"] == ["B"]
+    assert not v["round"]["ended"] and v["active_division_id"] == "A"
+    v = g.out()  # A's round ends: B is skipped, A plays on
+    assert v["active_division_id"] == "A" and not v["round"]["ended"]
+    v = g.confirm()  # confirming B doesn't touch A's round
+    assert v["active_division_id"] == "A" and not v["round"]["ended"]
+    assert v["stages"][0]["divisions"][1]["status"] == "complete"
+    v = g.play_until(lambda v: v["prompts"])
+    v = g.confirm()  # the last division confirmed: the next stage is drawn
+    assert len(v["stages"]) == 2
+
+
+def test_undo_across_a_division_switch():
+    g = started(21, seed=7)
+    first = g.view["round"]["seats"]
+    g.out()
+    assert g.view["active_division_id"] == "B"
+    g.undo()
+    assert g.view["active_division_id"] == "A" and g.view["round"]["seats"] == first
+    assert g.view["stages"][0]["divisions"][1]["status"] == "waiting"
 
 
 def test_dq_of_a_waiting_player_has_no_round():
@@ -409,22 +507,23 @@ def test_add_player_while_divisions_run():
     g = started(21, seed=1)
     g.do("add_player", name="Late1")  # B hasn't started → joins B
     assert g.view["stages"][0]["divisions"][1]["player_ids"][-1] == g.pid("Late1")
-    g.play_to_cutoff()
-    g.confirm()  # B starts; no waiting division left
+    g.out()  # round 2: B's first turn, so B has started
+    assert len(g.seated()) == 11  # B had 10 + Late1
     g.do("add_player", name="Late2")
     late2 = next(p for p in g.view["players"] if p["name"] == "Late2")
     assert late2["division_id"] is None and late2["status"] == "waiting"
-    assert len(g.seated()) == 11  # B had 10 + Late1
-    g.play_to_cutoff()
-    v = g.confirm()  # pool = 5 + 5 advancers + Late2
-    final = v["stages"][1]["divisions"][0]
+    v = g.view
+    while len(v["stages"]) == 1:
+        v = g.confirm() if v["prompts"] else g.out()
+    final = v["stages"][1]["divisions"][0]  # 5 + 5 advancers + Late2
     assert v["stages"][1]["is_final"] and late2["id"] in final["player_ids"]
     assert len(final["player_ids"]) == 11
 
 
 def test_dq_reaching_cutoff_during_stoppage_closes_it():
     g = started(21, seed=4)
-    g.out(5)
+    a_at(g, 6)
+    g.do("start_play")
     g.do("start_stoppage")
     v = g.do("disqualify", player_id=g.seated()[0])
     assert v["round"]["ended"] and v["round"]["paused_since"] is None
@@ -433,7 +532,7 @@ def test_dq_reaching_cutoff_during_stoppage_closes_it():
 
 def test_dq_that_ends_the_round_cancels_every_open_stalemate():
     g = started(21, seed=4)
-    g.out(5)  # A: 6 left, target 5
+    a_at(g, 6)  # A: 6 left, target 5
     a, b, c = g.seated()[:3]
     g.do("open_stalemate", player_ids=[a, b])
     v = g.do("disqualify", player_id=c)

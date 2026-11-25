@@ -1,5 +1,5 @@
 import type { Report, ReportPlayer } from '../api/types'
-import { ordinal } from '../state/describe'
+import { ordinal, roundName, roundShort } from '../state/describe'
 
 export interface ChartSize {
   nameW: number
@@ -20,21 +20,10 @@ export function finishLabel(p: ReportPlayer): string {
   return p.tied ? `T-${p.place}` : ordinal(p.place)
 }
 
-/** Consecutive runs of rounds, e.g. [1,2,3,7,8] → [[1,3],[7,8]] (gaps = other divisions' rounds). */
-export function runs(rounds: number[]): [number, number][] {
-  const out: [number, number][] = []
-  for (const r of rounds) {
-    const last = out[out.length - 1]
-    if (last && r === last[1] + 1) last[1] = r
-    else out.push([r, r])
-  }
-  return out
-}
-
 /** Rows = players by finish, columns = rounds. Markers sit centred on the bar (HANDOFF §8.4). */
-export function SurvivalChart({ report, size, accent, ground, text, onName, prefix = 'R' }: {
+export function SurvivalChart({ report, size, accent, ground, text, onName, compact = false }: {
   report: Report
-  prefix?: string // round header: "R3" in the app, "3" on the story
+  compact?: boolean // round header: "B·R1" in the app, "B1" on the story
   size: ChartSize
   accent: string // champion bar, penalty diamond
   ground: string // fill inside the "lost stalemate" ring
@@ -47,6 +36,7 @@ export function SurvivalChart({ report, size, accent, ground, text, onName, pref
   const width = cols.length * colW
   const center = (rnd: number) => ((col.get(rnd) ?? 0) + 0.5) * colW
   const mid = (rowH - mark) / 2
+  const step = mark * 1.3 // between marks in the same round
 
   return (
     <div role="table" aria-label="Survival chart by round" className="survival" style={{ color: text }}>
@@ -55,7 +45,7 @@ export function SurvivalChart({ report, size, accent, ground, text, onName, pref
         <div style={{ width, display: 'grid', gridTemplateColumns: `repeat(${cols.length}, ${colW}px)` }}>
           {cols.map((n) => (
             <span key={n} role="columnheader" className="sv-round" style={{ fontSize: headFont, color: accent }}>
-              {prefix}{n}
+              {compact ? roundShort(report.round_names, n).replace(/·?R/, '') : roundShort(report.round_names, n)}
             </span>
           ))}
         </div>
@@ -65,8 +55,18 @@ export function SurvivalChart({ report, size, accent, ground, text, onName, pref
         const champ = p.status === 'champion'
         const summary = champ
           ? `${p.name} survived every round and won`
-          : p.out_round ? `${p.name} went out in round ${p.out_round}` : `${p.name}: ${p.status}`
-        let wonLost = 0
+          : p.out_round ? `${p.name} went out in ${roundName(report.round_names, p.out_round)}` : `${p.name}: ${p.status}`
+        // Each round's marks sit in a row that ends on the round's column centre (under its
+        // number): stalemates, then penalties, then the out ×, which closes the player's line.
+        const order = { won: 0, lost: 0, penalty: 1, out: 2, dq: 2, withdrawn: 2 }
+        const at = new Map<number, number>() // mark index → x
+        const byRound = new Map<number, number[]>()
+        p.marks.forEach((m, i) => { if (col.has(m.round)) byRound.set(m.round, [...(byRound.get(m.round) ?? []), i]) })
+        for (const [rnd, idx] of byRound) {
+          idx.sort((x, y) => order[p.marks[x].type] - order[p.marks[y].type])
+          idx.forEach((i, k) => at.set(i, center(rnd) - (idx.length - 1 - k) * step))
+        }
+        const leftmost = (rnd: number) => Math.min(center(rnd), ...(byRound.get(rnd) ?? []).map((i) => at.get(i)!))
         return (
           <div key={p.id} role="row" className="sv-row" style={{ height: rowH }}>
             <span role="rowheader" className="sv-name" style={{ width: nameW, fontSize: nameFont, color: champ ? accent : text }}>
@@ -76,28 +76,35 @@ export function SurvivalChart({ report, size, accent, ground, text, onName, pref
               {cols.map((n, i) => i % 2 === 1 && (
                 <span key={n} aria-hidden="true" className="sv-stripe" style={{ left: i * colW, width: colW }} />
               ))}
-              {runs(p.rounds.filter((r) => col.has(r))).map(([a, b]) => (
-                <span
-                  key={a}
-                  aria-hidden="true"
-                  className="sv-bar"
-                  style={{
-                    left: col.get(a)! * colW + 4,
-                    width: (col.get(b)! - col.get(a)! + 1) * colW - 8,
-                    top: (rowH - barH) / 2,
-                    height: barH,
-                    background: champ ? accent : 'rgba(249,228,197,0.24)',
-                  }}
-                />
-              ))}
+              {/* One line from the first round played to the last: divisions take turns, so a
+                  player's own rounds skip the others' and the line runs through those. */}
+              {[p.rounds.filter((r) => col.has(r))].filter((played) => played.length).map((played) => {
+                const a = Math.min(...played), b = Math.max(...played)
+                // From the first round's centre to the last one's (wider if marks need room).
+                const left = Math.min(center(a), leftmost(a) - mark * 0.4) - barH / 2
+                return (
+                  <span
+                    key={a}
+                    aria-hidden="true"
+                    className="sv-bar"
+                    style={{
+                      left,
+                      width: center(b) + barH / 2 - left,
+                      top: (rowH - barH) / 2,
+                      height: barH,
+                      background: champ ? accent : 'rgba(249,228,197,0.24)',
+                    }}
+                  />
+                )
+              })}
               {p.marks.map((m, i) => {
-                const c = center(m.round)
+                const c = at.get(i)
+                if (c == null) return null
                 if (m.type === 'won' || m.type === 'lost') {
-                  const off = wonLost++ % 3
                   return (
                     <span key={i} aria-hidden="true" className="sv-mark"
                       style={{
-                        left: c - mark * 1.6 - off * (mark * 0.5), top: mid, width: mark, height: mark, borderRadius: '50%',
+                        left: c - mark / 2, top: mid, width: mark, height: mark, borderRadius: '50%',
                         background: m.type === 'won' ? '#8cbcb4' : ground,
                         border: m.type === 'lost' ? `${Math.max(2, mark / 7)}px solid #8cbcb4` : undefined,
                       }} />
@@ -107,14 +114,16 @@ export function SurvivalChart({ report, size, accent, ground, text, onName, pref
                   const d = mark * 0.8
                   return (
                     <span key={i} aria-hidden="true" className="sv-mark"
-                      style={{ left: c + mark * 0.7, top: (rowH - d) / 2, width: d, height: d, background: accent, transform: 'rotate(45deg)' }} />
+                      style={{ left: c - d / 2, top: (rowH - d) / 2, width: d, height: d, background: accent, transform: 'rotate(45deg)' }} />
                   )
                 }
+                // Drawn, not typed: a font's × sits off-centre in its line box.
+                const x = mark * 0.9
                 return (
-                  <span key={i} aria-hidden="true" className="sv-x"
-                    style={{ left: c - mark * 0.7, top: 0, width: mark * 1.4, height: rowH, lineHeight: `${rowH}px`, fontSize: mark * 1.6 }}>
-                    ×
-                  </span>
+                  <svg key={i} aria-hidden="true" className="sv-x" width={x} height={x} viewBox="0 0 10 10"
+                    style={{ left: c - x / 2, top: (rowH - x) / 2 }}>
+                    <path d="M1.5 1.5 L8.5 8.5 M8.5 1.5 L1.5 8.5" stroke="#e8988a" strokeWidth={2.2} strokeLinecap="round" />
+                  </svg>
                 )
               })}
             </div>

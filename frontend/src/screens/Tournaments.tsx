@@ -118,8 +118,11 @@ export function Tournaments() {
       )}
 
       <section className="stack" aria-label="Past tournaments">
+        <div role="tablist" aria-label="Which tournaments" className="segmented tabs fit">
+          <button role="tab" aria-selected={!showArchived} aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>Past</button>
+          <button role="tab" aria-selected={showArchived} aria-pressed={showArchived} onClick={() => setShowArchived(true)}>Archived</button>
+        </div>
         <div className="row">
-          <h2 className="section-label grow">{showArchived ? 'ARCHIVED' : 'PAST'}</h2>
           <label className="sr-only" htmlFor="search">Search tournaments</label>
           <input
             id="search"
@@ -129,9 +132,6 @@ export function Tournaments() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className="btn btn-ghost" onClick={() => setShowArchived((v) => !v)}>
-            {showArchived ? 'Show past' : 'Show archived'}
-          </button>
         </div>
         {past.length === 0 && !q.isPending && (
           <p className="muted">{showArchived ? 'Nothing archived.' : 'No finished tournaments yet.'}</p>

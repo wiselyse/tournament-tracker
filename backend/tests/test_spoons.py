@@ -39,17 +39,15 @@ def test_between_places_n_minus_1_and_skips_empty_gap(n, e):
     assert not any(_close(s, marker) for s in spoons)
 
 
-def test_between_neighbours_move_a_third_of_a_seat_so_spacing_is_even():
-    # Rule 1.2.2 (2026): on a straight side, the spoons either side of the empty gap move
-    # ⅓ of a seat toward it, so the spoons across that stretch are evenly spaced.
+def test_empty_gap_keeps_its_spot_and_no_spoon_moves():
+    # The empty gap is drawn (as a red spoon) exactly where its spoon would be; the spoons
+    # either side stay at their own gap midpoints (the table evens them out in person).
     cfg = TableConfig("rectangle", max_long=8, max_end=0, spoon_layout="between")
     (spoons, marker), _ = _between(cfg, 16, 3)  # empty gap between top seats 4 and 5
-    assert marker["x"] == pytest.approx(0.5)
+    assert marker["x"] == pytest.approx(0.5) and "rot" in marker
     top = sorted(s["x"] for s in spoons if s["y"] < cfg.size[1] / 2)
     near = [x for x in top if abs(x - marker["x"]) < 0.15]
-    # un-nudged they'd sit at the gap midpoints 0.375 and 0.625; each moves ⅓ of a seat (1/8)
-    assert near == pytest.approx([0.375 + 1 / 24, 0.625 - 1 / 24])
-    assert near[1] - near[0] == pytest.approx(1 / 8 * 4 / 3)
+    assert near == pytest.approx([0.375, 0.625])  # one seat (1/8) apart, untouched
 
 
 def test_corner_gap_spoon_is_on_the_track_and_angled():
@@ -81,9 +79,26 @@ def test_between_spoon_heads_point_into_the_table(cfg):
             assert hx * (s["x"] - w / 2) + hy * (s["y"] - h / 2) < 0
 
 
+@pytest.mark.parametrize("cfg", [RECT, CIRCLE, TableConfig("oval", spoon_layout="between")])
+def test_final_two_share_one_spoon_dead_centre(cfg):
+    w, h = cfg.size
+    for e in (0, 1):
+        (spoons, marker), _ = _between(cfg, 2, e)
+        assert spoons == [{"x": w / 2, "y": h / 2, "rot": 0.0}] and marker is None
+
+
+def test_gap_across_an_empty_end_sits_on_the_middle_line_between_the_players():
+    cfg = TableConfig("rectangle", max_long=6, max_end=2, spoon_layout="between")
+    w, h = cfg.size
+    (spoons, _), _ = _between(cfg, 3, 0)  # top: 2 seats, bottom: 1, ends empty
+    # top seats at w/4 and 3w/4, bottom seat at w/2: the two end gaps sit halfway across
+    mid = sorted((s["x"], s["rot"]) for s in spoons if s["y"] == h / 2)
+    assert mid == [(pytest.approx(3 * w / 8), 0.0), (pytest.approx(5 * w / 8), 180.0)]
+    (_, marker), _ = _between(cfg, 3, 1)  # empty gap around the right end
+    assert marker["y"] == h / 2 and marker["x"] == pytest.approx(5 * w / 8)
+
+
 def test_between_small_tables():
-    (spoons, marker), _ = _between(CIRCLE, 2, 0)
-    assert len(spoons) == 1 and marker is not None
     (spoons, _), _ = _between(CIRCLE, 3, 1)
     assert len(spoons) == 2
     assert _between(CIRCLE, 1, 0)[0] == ([], None)

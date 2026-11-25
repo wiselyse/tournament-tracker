@@ -76,17 +76,34 @@ def _table_check(cfg: TableConfig, players: int) -> None:
     )
 
 
-def _seating(ctx: Ctx) -> dict:
+def _seating(ctx: Ctx, div_id: str | None = None) -> dict:
     s = ctx.state
-    seated = [p for p in s.alive_in(s.active_division_id) if s.players[p].status == "in"]
+    div_id = div_id or s.active_division_id
+    seated = [p for p in s.alive_in(div_id) if s.players[p].status == "in"]
     _table_check(s.table, len(seated))
     seats = rng.shuffle_seats(seated, ctx.rng)
     gap = rng.pick_empty_gap(len(seats), ctx.rng) if s.table.spoon_layout == "between" else None
     return {"seat_assignment": seats, "empty_gap": gap}
 
 
-def _start_round(ctx: Ctx) -> None:
-    ctx.emit("RoundStarted", round_no=ctx.state.rounds_played + 1, **_seating(ctx))
+def _start_round(ctx: Ctx, div_id: str | None = None) -> None:
+    """Seat the next round. The event names its division: with several divisions in a stage
+    they take turns, and replay follows whose turn it is from here."""
+    div_id = div_id or ctx.state.active_division_id
+    ctx.emit(
+        "RoundStarted",
+        round_no=ctx.state.rounds_played + 1,
+        division_id=div_id,
+        **_seating(ctx, div_id),
+    )
+
+
+def _play_division(ctx: Ctx, div_id: str) -> None:
+    """Give the table to `div_id`: its first round starts it, later ones just seat it."""
+    if ctx.state.divisions[div_id].status == "waiting":
+        _start_division(ctx, div_id)
+    else:
+        _start_round(ctx, div_id)
 
 
 def _end_round(ctx: Ctx) -> None:
@@ -156,9 +173,10 @@ def _after_elimination(ctx: Ctx, round_over: bool) -> None:
     if div.final and len(alive) <= 1:
         _complete(ctx, alive)
     elif div.status == "cutoff":
-        _end_round(ctx)
+        _end_round(ctx)  # wait for the organiser to confirm who advances
     elif round_over:
-        _start_round(ctx)
+        # Divisions take turns: each round goes to the next one still playing (A, B, C, A…).
+        _play_division(ctx, s.next_division(div.id))
 
 
 def _eliminate(ctx: Ctx, pid: str, reason: str) -> None:
@@ -191,17 +209,36 @@ def cmd_start(ctx: Ctx, cmd: dict) -> None:
     _create_stage(ctx, pool, force_final=not uses_divisions(len(pool), s.rules))
 
 
+def _round_winner(s: State, cmd: dict, loser_id: str) -> dict:
+    """Optional: who won the round (got four of a kind). Kept off the event when not given."""
+    if cmd.get("winner_id") is None:
+        return {}
+    r = s.round
+    w = _player(s, cmd, "winner_id")
+    _require(
+        w.id in r.seats and w.status == "in" and w.id != loser_id,
+        "the winner must be another player at the table",
+    )
+    return {"winner_id": w.id}
+
+
+def _round_out(ctx: Ctx, pid: str, reason: str, extra: dict) -> None:
+    """The round's loser goes out, the round ends and play moves on."""
+    r = ctx.state.round
+    if r.paused_since is not None:
+        ctx.emit("StoppageEnded")
+    ctx.emit("PlayerEliminated", player_id=pid, reason=reason, **extra)
+    _end_round(ctx)  # also closes any other open stalemate
+    _after_elimination(ctx, round_over=True)
+
+
 def cmd_mark_out(ctx: Ctx, cmd: dict) -> None:
     s = ctx.state
     r = _round_live(s)
     pl = _alive(s, cmd)
     _require(pl.id in r.seats and pl.status == "in", f"{pl.name} isn't playing this round")
     _require(not s.open_stalemates, "resolve or cancel the open stalemate first")
-    if r.paused_since is not None:
-        ctx.emit("StoppageEnded")
-    ctx.emit("PlayerEliminated", player_id=pl.id, reason="round")
-    ctx.emit("RoundEnded", round_no=r.no)
-    _after_elimination(ctx, round_over=True)
+    _round_out(ctx, pl.id, "round", _round_winner(s, cmd, pl.id))
 
 
 def cmd_open_stalemate(ctx: Ctx, cmd: dict) -> None:
@@ -228,10 +265,15 @@ def _stalemate(s: State, cmd: dict):
 
 
 def cmd_resolve_stalemate(ctx: Ctx, cmd: dict) -> None:
-    sm = _stalemate(ctx.state, cmd)
-    loser = _arg(cmd, "loser_id", str)  # rule 2.2.2: the player left without a spoon
+    """Rule 2.2.2: the player left without a spoon loses the stalemate, which loses them the
+    round: they go out and the round ends, just like marking them out."""
+    s = ctx.state
+    sm = _stalemate(s, cmd)
+    loser = _arg(cmd, "loser_id", str)
     _require(loser in sm.player_ids, "pick one of the stalemate's players")
+    extra = _round_winner(s, cmd, loser)
     ctx.emit("StalemateResolved", stalemate_id=sm.id, loser_id=loser)
+    _round_out(ctx, loser, "stalemate", extra)
 
 
 def cmd_cancel_stalemate(ctx: Ctx, cmd: dict) -> None:
@@ -333,8 +375,23 @@ def _largest_group(s: State) -> int:
     )
 
 
+def cmd_start_play(ctx: Ctx, cmd: dict) -> None:
+    """Start the clock: the round's, or with `stalemate_id` that stalemate's. Seats are drawn
+    first, then the organiser starts play when everyone is ready."""
+    s = ctx.state
+    r = _round_live(s)
+    if cmd.get("stalemate_id") is not None:
+        sm = _stalemate(s, cmd)
+        _require(sm.started_at is None, "the stalemate has already started")
+        ctx.emit("PlayStarted", stalemate_id=sm.id)
+    else:
+        _require(r.play_started_at is None, "the round has already started")
+        ctx.emit("PlayStarted")
+
+
 def cmd_start_stoppage(ctx: Ctx, cmd: dict) -> None:
     r = _round_live(ctx.state)
+    _require(r.play_started_at is not None, "start the round first")
     _require(r.paused_since is None, "play is already stopped")
     ctx.emit("StoppageStarted")
 
@@ -353,12 +410,14 @@ def cmd_confirm_cutoff(ctx: Ctx, cmd: dict) -> None:
         f"division {div_id} hasn't reached its cutoff",
     )
     ctx.emit("DivisionCutoffConfirmed", division_id=div_id, advancing_ids=s.alive_in(div_id))
-    waiting = [d for d in s.stage["division_ids"] if s.divisions[d].status == "waiting"]
-    if waiting:
-        nxt = cmd.get("next_division_id") or waiting[0]
-        _require(nxt in waiting, f"division {nxt} isn't waiting to play")
-        _start_division(ctx, nxt)
+    if s.round and not s.round.ended:
+        return  # confirmed a division away from the table; its round carries on
+    nxt = s.next_division(div_id)
+    if nxt is not None:
+        _play_division(ctx, nxt)
         return
+    if any(s.divisions[d].status != "complete" for d in s.stage["division_ids"]):
+        return  # another division still waits for its cutoff to be confirmed
     pool = [
         pid
         for pid, p in s.players.items()
@@ -381,6 +440,7 @@ HANDLERS: dict[str, Callable[[Ctx, dict], None]] = {
     "reroll": cmd_reroll,
     "swap_seats": cmd_swap_seats,
     "change_table": cmd_change_table,
+    "start_play": cmd_start_play,
     "start_stoppage": cmd_start_stoppage,
     "end_stoppage": cmd_end_stoppage,
     "confirm_cutoff": cmd_confirm_cutoff,

@@ -74,6 +74,9 @@ def test_play_through_commands(client, tid):
     assert v["round"]["no"] == 1 and len(v["round"]["spoons"]) == 5
     v = cmd(client, tid, type="mark_out", player_id=seated(v)[0]).json()
     assert v["round"]["no"] == 2
+    assert v["round_names"]["2"]["short"] == "R2"  # int keys survive JSON as strings
+    rep = client.get(f"/api/tournaments/{tid}/report").json()
+    assert rep["round_names"]["1"]["name"] == "Round 1"
     r = cmd(client, tid, type="mark_out", player_id="nobody")
     assert r.status_code == 422 and "unknown player" in r.json()["detail"]
     r = cmd(client, tid, type="explode")

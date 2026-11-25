@@ -73,7 +73,23 @@ class Game:
         return self.view
 
     def confirm(self, **args):
-        return self.do("confirm_cutoff", division_id=self.view["active_division_id"], **args)
+        """Confirm the (first) division waiting at its cutoff."""
+        div = next(p["division_id"] for p in self.view["prompts"] if p["type"] == "cutoff")
+        return self.do("confirm_cutoff", division_id=div, **args)
+
+    def alive(self, div):
+        """Players still in division `div`."""
+        d = next(d for st in self.view["stages"] for d in st["divisions"] if d["id"] == div)
+        ids = set(d["player_ids"])
+        return sum(
+            p["id"] in ids and p["status"] in ("in", "waiting") for p in self.view["players"]
+        )
+
+    def play_until(self, pred):
+        """Mark out whoever's first at the table (divisions take turns) until pred(view)."""
+        while not pred(self.view):
+            self.out()
+        return self.view
 
     def play_out(self):
         """Play the whole tournament to a champion."""

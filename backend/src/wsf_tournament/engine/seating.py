@@ -76,14 +76,17 @@ def fits(cfg: TableConfig, players: int) -> bool:
 def side_counts(cfg: TableConfig, n: int) -> list[int]:
     """Seats on [top, right, bottom, left]. Only for rectangle and square.
 
-    shortcut: rectangle fills long sides first, ends take the overflow (confirmed
-    2026-11-16); change it here if WSF wants ends filled earlier.
+    Rectangle: long sides fill first and the ends take the overflow. If that would put
+    one player on one end and leave the other end empty, one long-side player moves to
+    the empty end so the two ends face each other.
     """
     if not fits(cfg, n):
         raise ValueError(f"{n} players don't fit at a table for {cfg.capacity}")
     if cfg.shape == "rectangle":
         long = min(n, 2 * cfg.max_long)
         rest = n - long
+        if rest == 1 and long > 2:
+            long, rest = long - 1, 2
         return [math.ceil(long / 2), math.ceil(rest / 2), long // 2, rest // 2]
     if cfg.shape == "square":
         # Extras go to opposite sides first (top, bottom, then right, left) so players

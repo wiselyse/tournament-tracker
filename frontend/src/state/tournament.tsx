@@ -1,13 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
 import { api, divergedActions } from '../api/client'
-import type { TimelineEntry, TournamentState } from '../api/types'
+import type { TournamentState } from '../api/types'
 import { useConfirm } from '../components/Confirm'
 
 export interface Toast {
   id: number
   text: string
-  kind: 'done' | 'undone' | 'error'
+  kind: 'error' // only problems pop up; Undo and the timeline cover everything else
 }
 
 interface Ctx {
@@ -29,13 +29,6 @@ export function useT(): Ctx {
   const c = useContext(TournamentCtx)
   if (!c) throw new Error('useT outside TournamentProvider')
   return c
-}
-
-/** The newest command group's first entry: "Kit out", not the round it started. */
-function lastAction(timeline: TimelineEntry[]): string | null {
-  if (!timeline.length) return null
-  const group = timeline[timeline.length - 1].group
-  return timeline.find((e) => e.group === group)?.label ?? null
 }
 
 export function useTournamentQuery(id: string) {
@@ -68,7 +61,7 @@ export function TournamentProvider({ state, children }: { state: TournamentState
   const show = useCallback((text: string, kind: Toast['kind']) => {
     window.clearTimeout(toastTimer.current)
     setToast({ id: Date.now(), text, kind })
-    toastTimer.current = window.setTimeout(() => setToast(null), kind === 'error' ? 7000 : 5000)
+    toastTimer.current = window.setTimeout(() => setToast(null), 7000)
   }, [])
 
   const run = useCallback(
@@ -103,11 +96,10 @@ export function TournamentProvider({ state, children }: { state: TournamentState
 
   const act = useCallback(
     async (cmd: Record<string, unknown>) => {
-      const done = (s: TournamentState) => show(lastAction(s.timeline) ?? 'Done', 'done')
       let diverged: number | null = null
       const ok = await run(
         () => api.command(id, cmd),
-        done,
+        undefined,
         (e) => (diverged = divergedActions(e)) !== null,
       )
       if (ok || diverged === null) return ok
@@ -121,25 +113,25 @@ export function TournamentProvider({ state, children }: { state: TournamentState
         })
         if (!yes) return false
       }
-      return run(() => api.command(id, { ...cmd, discard_future: true }), done)
+      return run(() => api.command(id, { ...cmd, discard_future: true }))
     },
-    [id, run, show, confirm],
+    [id, run, confirm],
   )
 
   const undo = useCallback(async () => {
-    const undone = lastAction(state.timeline)
-    await run(() => api.undo(id), () => show(`Undone: ${undone ?? 'last action'}`, 'undone'))
-  }, [id, run, show, state.timeline])
+    await run(() => api.undo(id))
+  }, [id, run])
 
   const redo = useCallback(async () => {
-    await run(() => api.redo(id), (s) => show(`Redone: ${lastAction(s.timeline) ?? ''}`, 'done'))
-  }, [id, run, show])
+    await run(() => api.redo(id))
+  }, [id, run])
 
   const rewind = useCallback(
     async (seq: number) => {
-      await run(() => api.rewind(id, seq), () => show('Rewound', 'undone'))
+      // Redo brings the later events back; a new action replaces them (asked first).
+      await run(() => api.rewind(id, seq))
     },
-    [id, run, show],
+    [id, run],
   )
 
   const names = new Map(state.players.map((p) => [p.id, p.name]))

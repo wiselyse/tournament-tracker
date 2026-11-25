@@ -8,6 +8,7 @@ stalemate, penalty and out happened, and how long everything took.
 from .events import Event
 from .replay import State, apply, stalemate_result
 from .standings import places
+from .view import dealer_seats, table_geometry
 
 
 def report(events: list[Event]) -> dict:
@@ -17,6 +18,8 @@ def report(events: list[Event]) -> dict:
     seated: dict[str, set[int]] = {}
     stalemate_round: dict[str, int | None] = {}
     won: dict[str, int] = {}
+    round_wins: dict[str, int] = {}
+    seating: dict[int, tuple] = {}  # round → (seats, table, empty gap) as last drawn
     stoppages = 0
     first_at = last_at = None
 
@@ -36,31 +39,50 @@ def report(events: list[Event]) -> dict:
             if ev.type == "RoundStarted":
                 rounds[cur] = {
                     "no": cur,
-                    "division_id": s.round.division_id,
-                    "started_at": ev.at,
+                    **s.round_names[cur],  # n, name, short: its number within its division
+                    "started_at": ev.at,  # seats drawn
+                    "play_started_at": None,  # "Start round" pressed (set when the round ends)
                     "ended_at": None,
                     "ms": None,  # playing time, stoppages excluded (like the Live timer)
                     "players": len(p["seat_assignment"]),
                     "out": [],
+                    "outs": [],  # [{player_id, reason}]: round, stalemate, dq or withdrawn
+                    "winner_id": None,  # who got four of a kind, when the organiser said
                     "stalemates": 0,
+                    "stalemate_results": [],  # [{player_ids, loser_ids}]
                     "penalties": 0,
+                    "penalty_list": [],  # [{player_id, kind}]
                 }
                 first_at = first_at if first_at is not None else ev.at
             for pid in p["seat_assignment"]:
                 seated.setdefault(pid, set()).add(cur)
+        if ev.type in ("RoundStarted", "SeatsRerolled", "SeatsSwapped"):
+            seating[cur] = (list(s.round.seats), s.round.table, s.round.empty_gap)
         elif ev.type == "RoundEnded":
             rnd = rounds[p["round_no"]]
-            rnd["ended_at"], rnd["ms"] = ev.at, ev.at - rnd["started_at"] - s.round.paused_ms
+            # Playing time runs from "Start round" (older logs: from the seat draw).
+            began = s.round.play_started_at or rnd["started_at"]
+            rnd["ended_at"], rnd["ms"] = ev.at, ev.at - began - s.round.paused_ms
+            rnd["play_started_at"] = s.round.play_started_at
             last_at = ev.at
         elif ev.type == "PlayerEliminated":
             rnd = s.players[p["player_id"]].out_round
             if rnd is not None:
                 rounds[rnd]["out"].append(p["player_id"])
-            mark(p["player_id"], {"round": "out", "dq": "dq"}.get(p["reason"], "withdrawn"), rnd)
+                rounds[rnd]["outs"].append({"player_id": p["player_id"], "reason": p["reason"]})
+                if p.get("winner_id"):
+                    rounds[rnd]["winner_id"] = p["winner_id"]
+                    round_wins[p["winner_id"]] = round_wins.get(p["winner_id"], 0) + 1
+            kind = {"round": "out", "stalemate": "out", "dq": "dq"}.get(p["reason"], "withdrawn")
+            mark(p["player_id"], kind, rnd)
         elif ev.type == "StalemateOpened" and cur is not None:
             rounds[cur]["stalemates"] += 1
         elif ev.type == "StalemateResolved":
             rnd = stalemate_round[p["stalemate_id"]]
+            if rnd is not None:
+                rounds[rnd]["stalemate_results"].append(
+                    {"player_ids": winners + losers, "loser_ids": losers}
+                )
             for pid in winners:
                 won[pid] = won.get(pid, 0) + 1
                 mark(pid, "won", rnd)
@@ -68,6 +90,7 @@ def report(events: list[Event]) -> dict:
                 mark(pid, "lost", rnd)
         elif ev.type == "PenaltyLogged" and cur is not None and s.round and not s.round.ended:
             rounds[cur]["penalties"] += 1
+            rounds[cur]["penalty_list"].append({"player_id": p["player_id"], "kind": p["kind"]})
             mark(p["player_id"], "penalty", cur)
         elif ev.type == "StoppageStarted":
             stoppages += 1
@@ -88,6 +111,7 @@ def report(events: list[Event]) -> dict:
                 "out_round": pl.out_round,
                 "rounds": played,  # every round this player sat at the table
                 "stalemates_won": won.get(pid, 0),
+                "round_wins": round_wins.get(pid, 0),
                 "stalemates_lost": sum(1 for m in marks.get(pid, []) if m["type"] == "lost"),
                 "penalties": sum(pl.penalties.values()),
                 "marks": sorted(marks.get(pid, []), key=lambda m: m["round"]),
@@ -105,10 +129,21 @@ def report(events: list[Event]) -> dict:
     longest = max(timed, key=lambda r: r["ms"], default=None)
     shortest = min(timed, key=lambda r: r["ms"], default=None)
     top_stalemate = max(players, key=lambda x: x["stalemates_won"], default=None)
+    top_winner = max(players, key=lambda x: x["round_wins"], default=None)
+    for no, (seats, table, gap) in seating.items():
+        # Who sat where, drawn the way the Live table draws it (for the round story).
+        geo = table_geometry(table, len(seats), list(range(len(seats))), gap, s.rules.between_inset)
+        for seat, pid in zip(geo["seats"], seats, strict=True):
+            seat["player_id"] = pid
+        rounds[no]["seating"] = {
+            **geo,
+            "dealers": dealer_seats(len(seats), s.rules.second_dealer_at),
+        }
     return {
         "completed": s.completed,
         "champion_id": s.champion_id,
         "rounds": [rounds[k] for k in sorted(rounds)],
+        "round_names": s.round_names,
         "players": players,
         "stats": {
             "players": sum(1 for x in s.players.values() if x.status != "withdrawn"),
@@ -121,6 +156,11 @@ def report(events: list[Event]) -> dict:
             "divisions": sum(1 for d in s.divisions.values() if not d.final),
             "longest_round": longest and {"no": longest["no"], "ms": longest["ms"]},
             "shortest_round": shortest and {"no": shortest["no"], "ms": shortest["ms"]},
+            "most_round_wins": (
+                {"player_id": top_winner["id"], "count": top_winner["round_wins"]}
+                if top_winner and top_winner["round_wins"]
+                else None
+            ),
             "most_stalemates_won": (
                 {"player_id": top_stalemate["id"], "count": top_stalemate["stalemates_won"]}
                 if top_stalemate and top_stalemate["stalemates_won"]

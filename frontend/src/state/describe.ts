@@ -1,4 +1,4 @@
-import type { Division, TournamentState } from '../api/types'
+import type { Division, RoundNames, TournamentState } from '../api/types'
 
 export function activeDivision(s: TournamentState): Division | null {
   for (const st of s.stages) for (const d of st.divisions) if (d.id === s.active_division_id) return d
@@ -14,9 +14,10 @@ export function divisionLabel(s: TournamentState, id: string | null): string {
   return id ?? ''
 }
 
-/** Players still in the active division/table. */
+/** Players still in the division (or table) whose turn it is. Divisions take turns, so other
+ *  divisions' players can be "in" too. */
 export function remaining(s: TournamentState): number {
-  return s.players.filter((p) => p.status === 'in').length
+  return s.players.filter((p) => p.status === 'in' && (!s.active_division_id || p.division_id === s.active_division_id)).length
 }
 
 /** Top-bar chip: "Final table · 12 players", "Stage 1 · Division C". */
@@ -34,6 +35,10 @@ export function statusChip(s: TournamentState): { text: string; next?: string } 
   return { text: `Stage ${stage?.no} · Division ${div?.label ?? '—'}`, next }
 }
 
+/** Global round `no` as shown: each division counts its own rounds ("B·R1", "Division B · Round 1"). */
+export const roundShort = (names: RoundNames, no: number) => names[no]?.short ?? `R${no}`
+export const roundName = (names: RoundNames, no: number) => names[no]?.name ?? `Round ${no}`
+
 export function fmtDuration(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
   const h = Math.floor(s / 3600)
@@ -48,10 +53,10 @@ export function ordinal(n: number): string {
   return `${n}${suffix}`
 }
 
-export function placeLabel(p: { finish_place: number | null; finish_tied: boolean; status: string; out_round: number | null }) {
+export function placeLabel(p: { finish_place: number | null; finish_tied: boolean; status: string; out_round: number | null }, names: RoundNames) {
   if (p.status === 'withdrawn') return 'WD'
   if (p.finish_place == null) return ''
-  if (p.status === 'dq') return p.out_round != null ? `DQ (R${p.out_round})` : 'DQ'
+  if (p.status === 'dq') return p.out_round != null ? `DQ (${roundShort(names, p.out_round)})` : 'DQ'
   return p.finish_tied ? `T-${p.finish_place}` : ordinal(p.finish_place)
 }
 

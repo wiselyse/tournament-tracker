@@ -11,7 +11,9 @@ RECT_4_2 = TableConfig("rectangle", max_long=4, max_end=2)
 @pytest.mark.parametrize(
     "n, expected",
     [
+        (9, [4, 1, 3, 1]),  # never one end seat with the other end empty
         (10, [4, 1, 4, 1]),
+        (11, [4, 2, 4, 1]),
         (12, [4, 2, 4, 2]),
         (7, [4, 0, 3, 0]),
         (8, [4, 0, 4, 0]),

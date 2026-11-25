@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import type { Report as ReportData, ReportPlayer } from '../api/types'
+import type { Report as ReportData, ReportPlayer, RoundNames } from '../api/types'
 import { Icon } from '../components/Icon'
 import { finishLabel } from '../components/SurvivalChart'
 import { fileName, shareOrDownload, storyPng } from '../exports/share'
 import { STORIES, STORY_COMPONENTS, type StoryId } from '../exports/stories'
-import { fmtDuration } from '../state/describe'
+import { fmtDuration, roundName, roundShort } from '../state/describe'
 import { useReport, useT } from '../state/tournament'
 
 function hm(ms: number) {
@@ -13,9 +13,9 @@ function hm(ms: number) {
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
 }
 
-function note(p: ReportPlayer) {
+function note(p: ReportPlayer, names: RoundNames) {
   const bits = [
-    p.status === 'champion' ? null : p.status === 'dq' ? 'DQ' : p.status === 'withdrawn' ? 'Withdrew' : p.out_round ? `Round ${p.out_round}` : 'Still in',
+    p.status === 'champion' ? null : p.status === 'dq' ? 'DQ' : p.status === 'withdrawn' ? 'Withdrew' : p.out_round ? roundName(names, p.out_round) : 'Still in',
     p.stalemates_won ? `${p.stalemates_won} stalemate${p.stalemates_won > 1 ? 's' : ''} won` : null,
     p.penalties ? `${p.penalties} penalt${p.penalties > 1 ? 'ies' : 'y'}` : null,
   ]
@@ -48,8 +48,8 @@ export function Report() {
         </div>
         {r.stats.longest_round && (
           <p className="muted small">
-            Longest round: R{r.stats.longest_round.no} ({fmtDuration(r.stats.longest_round.ms)})
-            {r.stats.shortest_round && ` · shortest: R${r.stats.shortest_round.no} (${fmtDuration(r.stats.shortest_round.ms)})`}
+            Longest round: {roundShort(r.round_names, r.stats.longest_round.no)} ({fmtDuration(r.stats.longest_round.ms)})
+            {r.stats.shortest_round && ` · shortest: ${roundShort(r.round_names, r.stats.shortest_round.no)} (${fmtDuration(r.stats.shortest_round.ms)})`}
             {r.stats.stoppages ? ` · ${r.stats.stoppages} stoppage${r.stats.stoppages > 1 ? 's' : ''}` : ''}
             {r.stats.dqs ? ` · ${r.stats.dqs} DQ` : ''}
           </p>
@@ -64,7 +64,7 @@ export function Report() {
                   {p.name}
                 </span>
                 <span className="podium-note">
-                  {i === 1 ? `Played ${p.rounds.length} round${p.rounds.length === 1 ? '' : 's'}` : note(p)}
+                  {i === 1 ? `Played ${p.rounds.length} round${p.rounds.length === 1 ? '' : 's'}` : note(p, r.round_names)}
                 </span>
               </div>
             ))}
@@ -79,7 +79,7 @@ export function Report() {
             <li key={p.id}>
               <span className="st-place">{finishLabel(p) || '—'}</span>
               <Link className="st-name" to={`../players?open=${p.id}`} relative="path">{p.name}</Link>
-              <span className="muted small">{note(p)}</span>
+              <span className="muted small">{note(p, r.round_names)}</span>
             </li>
           ))}
         </ol>
@@ -93,10 +93,13 @@ function ExportPanel({ report }: { report: ReportData }) {
   const { state } = useT()
   const [chosen, setChosen] = useState<StoryId>('champion')
   const [all, setAll] = useState(true)
+  const last = report.rounds[report.rounds.length - 1]?.no ?? 0
+  const [picked, setPicked] = useState<number | null>(null) // Single round story; null = latest
+  const roundNo = Math.min(picked ?? last, last)
   const [pngs, setPngs] = useState<Partial<Record<StoryId, File>>>({})
   const [msg, setMsg] = useState<string | null>(null)
   const nodes = useRef<Partial<Record<StoryId, HTMLDivElement | null>>>({})
-  const key = `${state.cursor}-${state.head}-${state.tournament.name}`
+  const key = `${state.cursor}-${state.head}-${state.tournament.name}-${roundNo}`
 
   // Render the PNGs ahead of time: Safari only opens the share sheet straight after a tap.
   useEffect(() => {
@@ -109,7 +112,7 @@ function ExportPanel({ report }: { report: ReportData }) {
         try {
           const blob = await storyPng(node)
           if (!cancelled)
-            setPngs((p) => ({ ...p, [s.id]: new File([blob], fileName(state.tournament.name, s.id), { type: 'image/png' }) }))
+            setPngs((p) => ({ ...p, [s.id]: new File([blob], fileName(state.tournament.name, s.id === 'round' ? `round-${roundNo}` : s.id), { type: 'image/png' }) }))
         } catch (e) {
           if (!cancelled) setMsg(`Couldn't render ${s.label}: ${e instanceof Error ? e.message : e}`)
         }
@@ -117,10 +120,13 @@ function ExportPanel({ report }: { report: ReportData }) {
     }
     const t = window.setTimeout(run, 300)
     return () => { cancelled = true; window.clearTimeout(t) }
-  }, [key, report, state.tournament.name]) // report: the hidden stories redraw when it arrives
+  }, [key, report, roundNo, state.tournament.name]) // report: the hidden stories redraw when it arrives
 
-  const files = all ? STORIES.map((s) => pngs[s.id]).filter((f): f is File => !!f) : pngs[chosen] ? [pngs[chosen]!] : []
-  const ready = all ? files.length === STORIES.length : files.length === 1
+  // The set is the night's stories; a single round is shared on its own.
+  const SET = STORIES.filter((s) => s.id !== 'round')
+  const together = all && chosen !== 'round'
+  const files = together ? SET.map((s) => pngs[s.id]).filter((f): f is File => !!f) : pngs[chosen] ? [pngs[chosen]!] : []
+  const ready = together ? files.length === SET.length : files.length === 1
   const Preview = STORY_COMPONENTS[chosen]
 
   return (
@@ -131,7 +137,7 @@ function ExportPanel({ report }: { report: ReportData }) {
       </div>
       <div className="export-row">
         <div className="story-preview" role="img" aria-label={`Story preview: ${STORIES.find((s) => s.id === chosen)?.label}`}>
-          <div className="story-scale"><Preview state={state} report={report} /></div>
+          <div className="story-scale"><Preview state={state} report={report} roundNo={roundNo} /></div>
         </div>
         <div role="radiogroup" aria-label="Story template" className="story-picker">
           {STORIES.map((s) => (
@@ -141,10 +147,18 @@ function ExportPanel({ report }: { report: ReportData }) {
           ))}
         </div>
       </div>
-      <label className="check">
-        <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />
-        Include all 5 as one swipeable set
-      </label>
+      {chosen === 'round' ? (
+        <div className="row small-gap round-pick">
+          <button className="btn btn-surface" disabled={roundNo <= 1} onClick={() => setPicked(roundNo - 1)} aria-label="Previous round">‹</button>
+          <span className="grow center">{roundName(report.round_names, roundNo)} ({roundNo} of {last})</span>
+          <button className="btn btn-surface" disabled={roundNo >= last} onClick={() => setPicked(roundNo + 1)} aria-label="Next round">›</button>
+        </div>
+      ) : (
+        <label className="check">
+          <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />
+          Include all {SET.length} as one swipeable set
+        </label>
+      )}
       {msg && <p className="bad-text small">{msg}</p>}
       <div className="grow" />
       <button
@@ -170,7 +184,7 @@ function ExportPanel({ report }: { report: ReportData }) {
           const C = STORY_COMPONENTS[s.id]
           return (
             <div key={s.id} ref={(el) => { nodes.current[s.id] = el }}>
-              <C state={state} report={report} />
+              <C state={state} report={report} roundNo={roundNo} />
             </div>
           )
         })}
